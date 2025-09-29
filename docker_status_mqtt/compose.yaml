@@ -1,0 +1,31 @@
+services:
+  homeassistant:
+    container_name: homeassistant
+    image: "ghcr.io/home-assistant/home-assistant:stable"
+    volumes:
+      - ./debug/containers/ha/config:/config
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "8123:8123"
+  mosquitto:
+    container_name: mosquitto
+    image: eclipse-mosquitto
+    environment:
+      TZ: America/Sao_Paulo
+    volumes:
+      - ./debug/containers/mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./debug/containers/mosquitto/passwd_file:/mosquitto/passwd_file # mqtt_user:password
+      - ./debug/containers/mosquitto/data:/mosquitto/data
+      - ./debug/containers/mosquitto/log:/mosquitto/log
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+  mlogs:
+    container_name: mlogs
+    image: eclipse-mosquitto
+    environment:
+      TZ: America/Sao_Paulo
+      USER: mqtt_user
+      PASSWORD: password
+    entrypoint: "sh -c 'mosquitto_sub -v --username $$USER --pw $$PASSWORD -t \"#\"'"
+    network_mode: "container:mosquitto"

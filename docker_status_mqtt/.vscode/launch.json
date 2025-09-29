@@ -1,0 +1,81 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug (nvim - codelldb)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "./target/debug/docker_status_mqtt",
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "args": [],
+        },
+        {
+            "name": "Debug test (nvim - codelldb)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "./target/debug/deps/docker_status_mqtt-67ac22f37e896e09",
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "args": [],
+            "preRunCommands": [
+                "command script import ${workspaceFolder}/.vscode/rust_prettifier_for_lldb.py"
+            ],
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=docker_status_mqtt-bin",
+                    "--package=docker_status_mqtt-bin"
+                ],
+                "filter": {
+                    "name": "docker_status_mqtt-bin",
+                    "kind": "bin"
+                },
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=docker_status_mqtt-bin",
+                    "--package=docker_status_mqtt-bin"
+                ],
+                "filter": {
+                    "name": "docker_status_mqtt-bin",
+                    "kind": "bin"
+                },
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'docker_status_mqtt-bin'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=docker_status_mqtt-bin",
+                    "--package=docker_status_mqtt-bin"
+                ],
+                "filter": {
+                    "name": "docker_status_mqtt-bin",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
