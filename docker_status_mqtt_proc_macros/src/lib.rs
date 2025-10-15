@@ -5,13 +5,13 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
-#[proc_macro_derive(ComponentDetailsGetter)]
-pub fn derive_component_details_getter(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(EntityDetailsGetter)]
+pub fn derive_entity_details_getter(input: TokenStream) -> TokenStream {
     let derive_input = parse_macro_input!(input as DeriveInput);
     let name = derive_input.ident;
     let generated = quote! {
-        impl ComponentDetailsGetter for #name {
-            fn details(&self) -> &ComponentDetails {
+        impl EntityDetailsGetter for #name {
+            fn details(&self) -> &EntityDetails {
                 &self.details
             }
         }

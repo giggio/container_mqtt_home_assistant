@@ -1,35 +1,77 @@
 use chrono::Utc;
-use rumqttc::v5::ConnectionError::*;
 use rumqttc::{
     Transport,
     v5::{
-        AsyncClient, ConnectionError, Event, EventLoop, MqttOptions,
-        mqttbytes::{QoS, v5::Packet},
+        ClientError,
+        ConnectionError::{self, *},
+        Event, MqttOptions,
+        mqttbytes::{
+            QoS,
+            v5::{LastWill, Packet},
+        },
     },
 };
 use rustls_platform_verifier::ConfigVerifierExt;
-use std::{sync::Arc, time::Duration};
-use tokio::sync::RwLock;
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic},
+    time::Duration,
+};
 use tokio::{
     sync::watch::{Receiver, Sender},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
     time::{self, timeout},
 };
 use tokio_rustls::rustls::ClientConfig;
 
-use crate::cancellation_token::{CancellationToken, CancellationTokenSource};
-use crate::datetime::pretty_format;
-use crate::ha_devices::{Device, EntityData};
-use crate::sleep::sleep_cancellable;
+use crate::{
+    cancellation_token::{CancellationToken, CancellationTokenSource},
+    devices::Devices,
+    helpers::pretty_format,
+    update_engine::{TimedUpdateEventProvider, UpdateEvent},
+};
 
-#[derive(Clone)]
-pub struct DeviceManager {
-    client: AsyncClient,
-    discovery_prefix: String,
-    connected: Arc<RwLock<Option<bool>>>,
-    tx: Sender<ChannelMessages>,
-    default_timeout: Duration,
+const DURATION_KEEPALIVE: Duration = Duration::from_secs(45);
+const DURATION_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+const DURATION_AVAILABILITY_AFTER_DISCOVERY: Duration = Duration::from_secs(5);
+const DURATION_UNTIL_SHUTDOWN: Duration = Duration::from_secs(5);
+const DURATION_ZERO: Duration = Duration::from_secs(0);
+const DURATION_MAX: Duration = Duration::from_secs(u64::MAX);
+const DURATION_QUICK_CYCLE: Duration = Duration::from_millis(100);
+const DISCOVERY_PREFIX: &str = "homeassistant";
+
+#[cfg(test)]
+pub mod mqtt_client {
+    use rumqttc::v5::{ClientError, ConnectionError, Event, MqttOptions, mqttbytes::QoS};
+    use std::pin::Pin;
+    mockall::mock! {
+        pub EventLoop {
+            pub fn poll(&mut self) -> Pin<Box<dyn std::future::Future<Output = std::result::Result<Event, ConnectionError>> + Send>>;
+        }
+    }
+    mockall::mock! {
+        #[derive(Debug, Default)]
+        pub AsyncClient {
+            pub fn new(options: MqttOptions, capacity: usize) -> (Self, MockEventLoop);
+            pub fn publish(&self, topic: String, qos: QoS, retain: bool, payload: String) -> Pin<Box<dyn Future<Output = std::result::Result<(), ClientError>> + Send>>;
+            pub fn subscribe(&self, topic: String, qos: QoS) -> Pin<Box<dyn Future<Output = std::result::Result<(), ClientError>> + Send>>;
+            pub fn try_disconnect(&self) -> std::result::Result<(), ClientError>;
+        }
+        impl Clone for AsyncClient {
+            fn clone(&self) -> Self;
+        }
+    }
 }
+#[cfg(not(test))]
+pub mod mqtt_client {
+    pub use rumqttc::v5::AsyncClient;
+    pub use rumqttc::v5::EventLoop;
+}
+
+#[cfg_attr(test, mockall_double::double)]
+use mqtt_client::{AsyncClient, EventLoop};
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 struct EventHandled {
     should_wait: bool,
@@ -43,19 +85,47 @@ pub enum ChannelMessages {
     Message(PublishResult),
 }
 
+#[derive(Clone)]
+pub struct DeviceManager {
+    client: AsyncClient,
+    discovery_prefix: String,
+    connected: Arc<atomic::AtomicU8>,
+    tx: Sender<ChannelMessages>,
+    default_timeout: Duration,
+    publish_interval: Duration,
+    availability_topic: String,
+    availability_after_discovery: Duration,
+    cancellation_token: CancellationToken,
+}
+
 impl DeviceManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        broker_host: &str,
+        broker_host: String,
         broker_port: u16,
-        connection_id: &str,
-        username: &str,
-        password: &str,
+        device_manager_id: String,
+        username: String,
+        password: String,
         disable_tls: bool,
-    ) -> Result<(Self, EventLoop, Receiver<ChannelMessages>), Box<dyn std::error::Error>> {
-        let mut mqtt_options = MqttOptions::new(connection_id, broker_host, broker_port);
-        mqtt_options.set_keep_alive(Duration::from_secs(45));
-        mqtt_options.set_clean_start(false);
-        mqtt_options.set_credentials(username, password);
+        publish_interval: Duration,
+        cancellation_token: CancellationToken,
+    ) -> Result<(Self, EventLoop, Receiver<ChannelMessages>)> {
+        info!(
+            "Connecting to MQTT broker at {broker_host}:{broker_port} with device manager id: {device_manager_id} and user: {username}"
+        );
+        let availability_topic = format!("{device_manager_id}/availability");
+        let mut mqtt_options = MqttOptions::new(device_manager_id, broker_host, broker_port);
+        mqtt_options
+            .set_last_will(LastWill {
+                topic: availability_topic.clone().into(),
+                message: "offline".into(),
+                qos: QoS::AtLeastOnce,
+                retain: false,
+                properties: None,
+            })
+            .set_keep_alive(DURATION_KEEPALIVE)
+            .set_clean_start(false)
+            .set_credentials(username, password);
         if disable_tls {
             warn!("WARNING: TLS is disabled, connection will be unencrypted!");
         } else {
@@ -63,177 +133,111 @@ impl DeviceManager {
                 ClientConfig::with_platform_verifier()?.into(),
             ));
         }
-        info!(
-            "Connecting to MQTT broker at {broker_host}:{broker_port} with connection ID: {connection_id} and user: {username}"
-        );
         let (client, eventloop) = AsyncClient::new(mqtt_options, 10);
         let (tx, rx) = tokio::sync::watch::channel(ChannelMessages::Connected(false));
         Ok((
             Self {
                 client,
-                discovery_prefix: "homeassistant".to_string(),
-                connected: Arc::new(RwLock::new(None)),
+                discovery_prefix: DISCOVERY_PREFIX.to_string(),
+                connected: Arc::new(atomic::AtomicU8::new(0)), // None
                 tx,
-                default_timeout: Duration::from_secs(5),
+                default_timeout: DURATION_DEFAULT_TIMEOUT,
+                publish_interval,
+                availability_topic,
+                availability_after_discovery: DURATION_AVAILABILITY_AFTER_DISCOVERY,
+                cancellation_token,
             },
             eventloop,
             rx,
         ))
     }
 
-    async fn publish_entities_discovery(
-        &self,
-        devices: Arc<RwLock<Vec<Device>>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        for device in devices.read().await.iter() {
-            let discovery_json = device.json_for_discovery().await?.to_string();
-            let discovery_topic = device.discovery_topic(&self.discovery_prefix);
+    fn is_connected(&self) -> Option<bool> {
+        match self.connected.load(atomic::Ordering::SeqCst) {
+            0 => None,
+            1 => Some(false),
+            _ => Some(true),
+        }
+    }
+
+    fn set_connected(&self, is_connected: bool) {
+        let int_value = if is_connected { 2 } else { 1 };
+        self.connected.store(int_value, atomic::Ordering::SeqCst);
+    }
+
+    pub fn availability_topic(&self) -> String {
+        self.availability_topic.clone()
+    }
+
+    async fn publish_entities_discovery(&self, devices: Devices) -> Result<()> {
+        let discovery_info = devices.create_discovery_info(&self.discovery_prefix).await?;
+        for (discovery_topic, discovery_json) in discovery_info.into_iter() {
             trace!(
-                "Publishing discovery for device: {}, topic: {discovery_topic}, payload: {discovery_json}",
-                device.details.name,
+                "Publishing discovery, topic: {}, payload: {}",
+                &discovery_topic, &discovery_json,
             );
-            timeout(
-                self.default_timeout,
-                self.client
-                    .publish(discovery_topic, QoS::AtLeastOnce, false, discovery_json),
-            )
-            .await??;
-            info!(
-                "Published device discoveries for device: {}",
-                device.details.name
-            );
+            self.publish_to_client(discovery_topic.clone(), discovery_json).await?;
+            debug!("Published device discoveries for topic: {}", discovery_topic);
         }
         Ok(())
     }
 
-    async fn subscribe_to_commands(
-        &self,
-        devices: Arc<RwLock<Vec<Device>>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        info!("Subscribing to Home Assistant status topic...");
-        timeout(
-            self.default_timeout,
-            self.client.subscribe(
-                format!("{}/status", &self.discovery_prefix),
-                QoS::AtLeastOnce,
-            ),
-        )
-        .await??;
+    async fn subscribe_to_commands(&self, devices: Devices) -> Result<()> {
+        debug!("Subscribing to Home Assistant status topic...");
+        self.subscribe_to_client(format!("{}/status", &self.discovery_prefix))
+            .await?;
         trace!("Subscribed to Home Assistant status topic");
-        info!("Subscribing to command topics...");
-        for device in devices.read().await.iter() {
-            for command_topic in device.command_topics().iter() {
-                timeout(
-                    self.default_timeout,
-                    self.client.subscribe(command_topic, QoS::AtLeastOnce),
-                )
-                .await??;
-                trace!(
-                    "Subscribed to command topic {command_topic} for device {}",
-                    device.details.name
-                );
-            }
+        debug!("Subscribing to command topics...");
+        for command_topic in devices.command_topics().await.iter() {
+            self.subscribe_to_client(command_topic.to_owned()).await?;
+            trace!("Subscribed to command topic {command_topic}");
         }
         trace!("Subscribed to command topics");
         Ok(())
     }
 
-    async fn _remove_entities(
-        &self,
-        devices: &Vec<Device>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    #[allow(dead_code)]
+    async fn remove_entities(&self, devices: Devices) -> Result<()> {
         trace!("Removing all devices and entities from Home Assistant...");
-        for device in devices {
-            info!("Making device {} unavailable.", device.details.name);
-            timeout(
-                self.default_timeout,
-                self.client.publish(
-                    device.availability_topic(),
-                    QoS::AtLeastOnce,
-                    false,
-                    "offline",
-                ),
-            )
-            .await??;
-            info!(
-                "Removing device entities for device: {}",
-                device.details.name
-            );
-            timeout(
-                self.default_timeout,
-                self.client.publish(
-                    device.discovery_topic(&self.discovery_prefix),
-                    QoS::AtLeastOnce,
-                    false,
-                    "",
-                ),
-            )
-            .await??;
+        self.make_unavailable().await?;
+        for discovery_topic in devices.discovery_topics(&self.discovery_prefix).await.into_iter() {
+            trace!("Removing device entities for topic: {}", &discovery_topic);
+            self.publish_to_client(discovery_topic, "".to_string()).await?;
         }
         info!("Removed all devices and entities from Home Assistant");
         Ok(())
     }
 
-    async fn publish_sensor_data_for_all_devices(
-        &self,
-        devices: Arc<RwLock<Vec<Device>>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn publish_sensor_data_for_all_devices(&self, devices: Devices) -> Result<()> {
         trace!("Publishing sensor data to Home Assistant...");
-        if *self.connected.read().await == Some(false) {
+        if self.is_connected() != Some(true) {
             trace!("Not connected to MQTT broker, skipping sensor data publishing");
             return Ok(());
         }
-        info!("Publishing sensor data...");
-        let mut entities_data = Vec::<EntityData>::new();
-        let devices_lock = devices.read().await;
-        let devices_iter = devices_lock.iter();
-        for device in devices_iter {
-            trace!("Getting entities data for device: {}", device.details.name);
-            let data = device.get_entities_data().await?;
-            trace!(
-                "Got entities data for device: {}: {data:?}",
-                device.details.name
-            );
-            entities_data.extend(data);
-        }
+        debug!("Publishing sensor data...");
+        let entities_data = devices.get_entities_data().await?;
         self.publish_sensor_data(entities_data).await?;
         trace!("Published all sensor data to Home Assistant");
         Ok(())
     }
 
-    async fn publish_sensor_data(
-        &self,
-        entities_data: Vec<EntityData>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn publish_sensor_data(&self, entities_data: HashMap<String, String>) -> Result<()> {
         for entity_data in entities_data {
             if log_enabled!(log::Level::Trace) {
                 trace!(
                     "Publishing sensor data to topic: {}, payload: {}",
-                    &entity_data.topic, &entity_data.payload
+                    entity_data.0, entity_data.1
                 );
             } else if log_enabled!(log::Level::Info) {
-                info!("Publishing sensor data to topic: {}", &entity_data.topic);
+                info!("Publishing sensor data to topic: {}", entity_data.0);
             }
-            timeout(
-                self.default_timeout,
-                self.client.publish(
-                    entity_data.topic,
-                    QoS::AtLeastOnce,
-                    false,
-                    entity_data.payload,
-                ),
-            )
-            .await??;
+            self.publish_to_client(entity_data.0, entity_data.1).await?;
             trace!("Published sensor data to topic");
         }
         Ok(())
     }
 
-    async fn deal_with_command(
-        &self,
-        publish_result: PublishResult,
-        devices: Arc<RwLock<Vec<Device>>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn deal_with_command(&self, publish_result: PublishResult, devices: Devices) -> Result<()> {
         trace!(
             "Dealing with command on topic: {}, payload: {}",
             publish_result.topic, publish_result.payload
@@ -241,67 +245,46 @@ impl DeviceManager {
         if publish_result.topic == format!("{}/status", self.discovery_prefix) {
             if publish_result.payload == "online" {
                 info!("Broker is online, initializing in 5 seconds...");
-                time::sleep(self.default_timeout).await;
-                self.initialize(devices).await?;
+                let other_mqtt_device = self.clone();
+                tokio::spawn(async move {
+                    time::sleep(other_mqtt_device.default_timeout).await;
+                    if let Err(err) = other_mqtt_device.initialize(devices).await {
+                        error!("Error initializing after broker came online: {err}");
+                    }
+                });
             } else {
                 info!("Broker is going offline...");
             }
             return Ok(());
         }
-        let mut handled = false;
-        let mut devices_lock = devices.write().await;
-        for device in devices_lock.iter_mut() {
-            trace!(
-                "Checking if device {} can handle command...",
-                device.details.name
-            );
-            let command_handle_result = device
-                .handle_command(&publish_result.topic, &publish_result.payload)
-                .await?;
-            if command_handle_result.handled {
-                trace!(
-                    "Device {} handled command on topic: {}, payload: {}",
-                    device.details.name, publish_result.topic, publish_result.payload,
-                );
-                match command_handle_result.state_update {
-                    Some(state_update) if !state_update.is_empty() => {
-                        trace!("Command resulted in state update: {state_update:?}");
-                        match self.publish_sensor_data(state_update).await {
-                            Ok(_) => trace!("Sensor data published after command handling"),
-                            Err(e) => {
-                                error!(category = "deal_with_command"; "Error publishing sensor data after command handling: {e}")
-                            }
-                        }
-                    }
-                    _ => {
-                        trace!("Command did not result in state update");
-                    }
-                }
-            } else {
-                trace!(
-                    "Device {} did not handle command on topic: {}, payload: {}",
-                    device.details.name, publish_result.topic, publish_result.payload
-                );
-            }
-            handled = handled || command_handle_result.handled;
-            trace!(
-                "Device {} finished checking command, will now go to next device...",
-                device.details.name
-            );
-        }
-        if !handled {
+        let command_handle_results = devices.deal_with_command(&publish_result).await?;
+        let handled_commands = command_handle_results
+            .into_iter()
+            .filter(|r| r.handled)
+            .collect::<Vec<_>>();
+        if handled_commands.is_empty() {
             warn!(
                 "Received message on unknown topic: {} and payload:\n{}",
                 publish_result.topic, publish_result.payload
             );
+            return Ok(());
+        }
+        for state_update in handled_commands.into_iter().filter_map(|r| r.state_update) {
+            trace!("Command resulted in state update: {state_update:?}");
+            match self.publish_sensor_data(state_update).await {
+                Ok(_) => trace!("Sensor data published after command handling"),
+                Err(e) => {
+                    error!(category = "deal_with_command"; "Error publishing sensor data after command handling: {e}")
+                }
+            }
         }
         trace!("Completed dealing with command");
         Ok(())
     }
 
-    async fn disconnect(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn disconnect(&self) -> Result<()> {
         trace!("Disconnecting from MQTT broker if connected...");
-        if *self.connected.read().await == Some(true) {
+        if self.is_connected() == Some(true) {
             info!("Disconnecting from MQTT broker...");
             self.client.try_disconnect()?;
         } else {
@@ -310,46 +293,23 @@ impl DeviceManager {
         Ok(())
     }
 
-    async fn make_available(
-        &self,
-        devices: Arc<RwLock<Vec<Device>>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        self.set_availability(true, devices).await?;
+    async fn make_available(&self) -> Result<()> {
+        self.set_availability(true).await?;
         Ok(())
     }
 
-    fn make_unavailable(
-        &self,
-        devices: Arc<RwLock<Vec<Device>>>,
-    ) -> impl Future<Output = Result<(), Box<dyn std::error::Error>>> {
-        self.set_availability(false, devices)
+    fn make_unavailable(&self) -> impl Future<Output = Result<()>> {
+        self.set_availability(false)
     }
 
-    async fn set_availability(
-        &self,
-        available: bool,
-        devices: Arc<RwLock<Vec<Device>>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let availability_text = if available { "online" } else { "offline" };
+    async fn set_availability(&self, available: bool) -> Result<()> {
+        let availability_text = if available { "online" } else { "offline" }.to_string();
         trace!("Publishing availability as {availability_text} for all devices...");
-        if *self.connected.read().await == Some(true) {
-            for device in devices.read().await.iter() {
-                info!(
-                    "Publishing availability as {availability_text} for device {}...",
-                    device.details.name
-                );
-                timeout(
-                    self.default_timeout,
-                    self.client.publish(
-                        device.availability_topic(),
-                        QoS::AtLeastOnce,
-                        false,
-                        availability_text,
-                    ),
-                )
-                .await??;
-                trace!("Published availability to topic");
-            }
+        if self.is_connected() == Some(true) {
+            info!("Publishing availability as {availability_text}...");
+            self.publish_to_client(self.availability_topic.clone(), availability_text)
+                .await?;
+            trace!("Published availability to topic");
         } else {
             trace!("Not connected to MQTT broker, will not set availability");
             return Ok(());
@@ -362,21 +322,19 @@ impl DeviceManager {
         &self,
         message: &str,
         event: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let is_connected = { *self.connected.read().await };
+    ) -> std::result::Result<(), tokio::sync::watch::error::SendError<ChannelMessages>> {
+        let is_connected = { self.is_connected() };
         match is_connected {
             Some(true) => {
                 error!("Disconnected from MQTT broker after event {event}: Message: {message}");
-                *self.connected.write().await = Some(false);
+                self.set_connected(false);
                 self.tx.send(ChannelMessages::Connected(false))?;
                 debug!("Sent disconnected message to channel after event {event}");
             }
-            Some(false) => trace!(
-                "Not sending disconnected message to channel because was already disconnected"
-            ),
+            Some(false) => trace!("Not sending disconnected message to channel because was already disconnected"),
             None => {
                 error!("Initial connection failed with event: {event}");
-                *self.connected.write().await = Some(false);
+                self.set_connected(false);
             }
         }
         Ok(())
@@ -384,9 +342,9 @@ impl DeviceManager {
 
     async fn deal_with_event(
         &mut self,
-        event_result: Result<Event, ConnectionError>,
+        event_result: std::result::Result<Event, ConnectionError>,
         should_stop: bool,
-    ) -> Result<EventHandled, Box<dyn std::error::Error>> {
+    ) -> std::result::Result<EventHandled, EventHandlingError> {
         trace!("Dealing with event: {event_result:?}, should_stop: {should_stop}");
         let mut should_wait = false;
         let mut should_break = false;
@@ -405,7 +363,7 @@ impl DeviceManager {
                 } else {
                     debug!("Connected to MQTT broker with new session");
                 }
-                *self.connected.write().await = Some(true);
+                self.set_connected(true);
                 self.tx.send(ChannelMessages::Connected(true))?;
             }
             Ok(Event::Incoming(Packet::Disconnect(_))) => {
@@ -422,20 +380,17 @@ impl DeviceManager {
             }
             Err(e @ ConnectionRefused(_)) => {
                 error!("Connection refused: {e}");
-                std::process::exit(1);
+                return Err(EventHandlingError::Connection(format!("Connection refused: {e}")));
             }
             Err(Io(x)) => {
                 trace!("Received I/O error: {x}, will wait...");
-                self.got_disconnected(
-                    &format!("MQTT I/O connection error ({x}), will retry..."),
-                    "I/O Error",
-                )
-                .await?;
+                self.got_disconnected(&format!("MQTT I/O connection error ({x}), will retry..."), "I/O Error")
+                    .await?;
                 should_wait = true;
             }
             Err(Tls(e)) => {
-                error!("MQTT TLS error ({e}), exiting...");
-                std::process::exit(1);
+                error!("MQTT TLS error ({e})");
+                return Err(EventHandlingError::Connection("TLS Error".to_string()));
             }
             Err(MqttState(error)) => {
                 if should_stop {
@@ -443,11 +398,8 @@ impl DeviceManager {
                     should_break = true;
                 } else {
                     trace!("Received MQTT state error ({error}), will wait...");
-                    self.got_disconnected(
-                        "MQTT state error, retrying in 5 seconds...",
-                        "I/O Error",
-                    )
-                    .await?;
+                    self.got_disconnected("MQTT state error, retrying in 5 seconds...", "I/O Error")
+                        .await?;
                     should_wait = true;
                 }
             }
@@ -471,10 +423,7 @@ impl DeviceManager {
     /// After the connection is established, the event loop should be started to handle incoming messages and events.
     /// Subscriptions can be initialized together with the discovery boostraping messages because they do not need to
     /// wait for the connection to be established.
-    pub async fn initialize(
-        &self,
-        devices: Arc<RwLock<Vec<Device>>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn initialize(&self, devices: Devices) -> Result<()> {
         debug!("Initializing DeviceManager...");
         trace!("Publishing entities discovery on initialization...");
         self.publish_entities_discovery(devices.clone())
@@ -483,117 +432,141 @@ impl DeviceManager {
         trace!("Subscribing to command topics on initialization...");
         self.subscribe_to_commands(devices.clone()).await?;
         trace!("Publishing sensor data for all devices on initialization...");
-        self.publish_sensor_data_for_all_devices(devices.clone())
-            .await?;
-        trace!("Making devices available on initialization...");
-        self.make_available(devices).await?;
+        self.publish_sensor_data_for_all_devices(devices.clone()).await?;
+        let other_mqtt_device = self.clone();
+        tokio::spawn(async move {
+            trace!("Waiting before making available on initialization after discovery...");
+            match other_mqtt_device
+                .cancellation_token
+                .wait_on(time::sleep(other_mqtt_device.availability_after_discovery))
+                .await
+            {
+                Ok(_) => {
+                    // this wait is necessary because if it is the first time the device is connected,
+                    // registration will take a few seconds and if we make it available before that,
+                    // Home Assistant will not register it and the device and entities will not become
+                    // available.
+                    trace!("Making devices available on initialization after discovery...");
+                    if other_mqtt_device.make_available().await.is_err() {
+                        error!("Error making devices available on initialization after discovery.");
+                    }
+                }
+                Err(_) => {
+                    info!("Received Ctrl+C, not making available after discovery.");
+                }
+            };
+        });
         trace!("Initializatin done...");
         Ok(())
     }
 
-    pub async fn deal_with_event_loop(
-        &mut self,
-        mut eventloop: EventLoop,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    /// This runs synchronously the event loop, handling incoming messages and events,
+    /// on the main thread.
+    pub async fn deal_with_event_loop(&mut self, mut eventloop: EventLoop) -> Result<()> {
         let mut should_stop = false;
         let mut stop_at = None;
         let mut should_wait = false;
         loop {
             if should_wait {
-                trace!("Sleeping...");
+                trace!(category = "[event_loop]"; "Sleeping in the beginning of event loop...");
                 should_wait = false;
-                if !sleep_cancellable(Duration::from_secs(5)).await.completed {
-                    info!("Received Ctrl+C, shutting down...");
+
+                if self
+                    .cancellation_token
+                    .wait_on(time::sleep(self.publish_interval))
+                    .await
+                    .is_err()
+                {
+                    info!(category = "[event_loop]"; "Received Ctrl+C, shutting down...");
                     should_stop = true;
-                    stop_at = Some(Utc::now() + Duration::from_secs(5));
-                    if *self.connected.read().await == Some(true) {
-                        trace!(
-                            "Was connected, will make unavailable and disconnect after stop request..."
-                        );
+                    stop_at = Some(Utc::now() + DURATION_UNTIL_SHUTDOWN);
+                    if self.is_connected() == Some(true) {
+                        trace!(category = "[event_loop]"; "Was sleeping on the event loop and connected, will make unavailable and disconnect after stop request...");
                         self.tx.send(ChannelMessages::Stopping)?;
                     } else {
-                        trace!(
-                            "Was not connected, no need to wait for event loop and will skip make unavailable and disconnecting..."
-                        );
+                        trace!(category = "[event_loop]"; "Was sleeping on the event loop and not connected, no need to wait for event loop and will skip make unavailable and disconnecting...");
                         break;
                     }
                 }
             }
             let wait_duration = if should_stop {
-                if *self.connected.read().await == Some(false) {
-                    trace!("Not connected and stop requested, exiting event loop...");
+                if self.is_connected() != Some(true) {
+                    trace!(category = "[event_loop]"; "Not connected and stop requested, exiting event loop...");
                     break;
                 }
                 let difference: chrono::TimeDelta = stop_at.unwrap() - Utc::now();
                 if difference.num_seconds() <= 0 {
-                    info!("Graceful shutdown period elapsed, forcing disconnection...");
+                    info!(category = "[event_loop]"; "Graceful shutdown period elapsed, forcing disconnection...");
                     break;
                 }
-                difference.to_std().unwrap_or(Duration::from_secs(0))
+                let duration = difference.to_std().unwrap_or(DURATION_ZERO);
+                trace!(category = "[event_loop]"; "Stop requested, will wait for {} before forcing disconnection...", pretty_format(duration));
+                duration
             } else {
-                Duration::from_secs(u64::MAX)
+                DURATION_MAX
             };
             if log_enabled!(log::Level::Trace) {
                 if wait_duration.as_secs() == u64::MAX {
-                    trace!("Waiting indefinitely for events...");
+                    trace!(category = "[event_loop]"; "Waiting indefinitely for events...");
                 } else {
-                    trace!("Waiting for events for {}...", pretty_format(wait_duration));
+                    trace!(category = "[event_loop]"; "Waiting for events for {}...", pretty_format(wait_duration));
                 }
             }
             tokio::select! {
-                sleep_result = sleep_cancellable(wait_duration) => {
-                    if sleep_result.completed {
-                        error!("Forcing disconnection...");
-                        break;
-                    } else {
-                        info!("Received Ctrl+C, shutting down...");
-                        should_stop = true;
-                        stop_at = Some(Utc::now() + Duration::from_secs(5));
-                        if *self.connected.read().await == Some(true) {
-                            trace!("Was connected, will make unavailable and disconnect after stop request...");
-                            self.tx.send(ChannelMessages::Stopping)?;
-                        } else {
-                            trace!("Was not connected, no need to wait for event loop and will skip make unavailable and disconnecting...");
+                sleep_result = self
+                    .cancellation_token
+                    .wait_on(time::sleep(wait_duration)) => {
+                    match sleep_result {
+                        Ok(_) => {
+                            error!(category = "[event_loop]"; "Forcing disconnection...");
                             break;
+                        }
+                        Err(_) => {
+                            info!(category = "[event_loop]"; "Received Ctrl+C, shutting down...");
+                            should_stop = true;
+                            stop_at = Some(Utc::now() + DURATION_UNTIL_SHUTDOWN);
+                            if self.is_connected() == Some(true) {
+                                trace!(category = "[event_loop]"; "Was waiting for event loop and connected, will make unavailable and disconnect after stop request...");
+                                self.tx.send(ChannelMessages::Stopping)?;
+                            } else {
+                                trace!(category = "[event_loop]"; "Was waiting for event loop and not connected, no need to wait for event loop and will skip make unavailable and disconnecting...");
+                                break;
+                            }
                         }
                     }
                 }
                 loop_result = eventloop.poll() => {
-                    trace!("Event loop polled, result: {loop_result:?}");
+                    trace!(category = "[event_loop]"; "Event loop polled, result: {loop_result:?}");
                     match self.deal_with_event(loop_result, should_stop).await {
                         Ok(event_handled) => {
                             should_wait = event_handled.should_wait;
                             if event_handled.should_break {
-                                trace!("Event handled, breaking as requested...");
+                                trace!(category = "[event_loop]"; "Event handled, breaking as requested...");
                                 break;
                             }
-                            trace!("Event handled, continuing event loop pool...");
+                            trace!(category = "[event_loop]"; "Event handled, continuing event loop pool...");
+                        }
+                        Err(EventHandlingError::Connection(msg)) => {
+                            error!(category = "[event_loop]"; "Connection error ({msg}), exiting event loop...");
+                            return Err(Error::Connection(format!("{msg} in the event loop.")));
                         }
                         Err(e) => {
-                            error!("Error dealing with event: {e}, will retry in 5 seconds...");
+                            error!(category = "[event_loop]"; "Error dealing with event: {e}, will retry in 5 seconds...");
                             should_wait = true;
                         }
                     }
                 }
             }
         }
-        debug!("Exiting event loop");
+        debug!(category = "[event_loop]"; "Exiting event loop");
         Ok(())
     }
 
-    pub fn publish_sensor_data_periodically(
-        &self,
-        rx: Receiver<ChannelMessages>,
-        devices: Arc<RwLock<Vec<Device>>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn publish_sensor_data_periodically(&self, rx: Receiver<ChannelMessages>, devices: Devices) -> Result<()> {
         trace!("Starting periodic sensor data publishing task...");
         let other_mqtt_device = self.clone();
-        // let _local = LocalSet::new();
         tokio::spawn(async move {
-            match other_mqtt_device
-                .maintain_message_traffic(rx, devices.clone())
-                .await
-            {
+            match other_mqtt_device.maintain_message_traffic(rx, devices.clone()).await {
                 Ok(_) => trace!("Periodic sensor data publishing task exited normally"),
                 Err(e) => error!("Error in periodic sensor data publishing task: {e}"),
             }
@@ -601,93 +574,87 @@ impl DeviceManager {
         Ok(())
     }
 
-    pub async fn maintain_message_traffic(
-        self,
-        mut rx: Receiver<ChannelMessages>,
-        devices: Arc<RwLock<Vec<Device>>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut connection_manager = ConnectionManager {
-            connected: false,
-            join_handle: None,
-            cancellation_token_source: None,
-            devices: devices.clone(),
-        };
+    /// this runs in a separate thread, handling messages from the channel
+    pub async fn maintain_message_traffic(self, mut rx: Receiver<ChannelMessages>, devices: Devices) -> Result<()> {
+        let mut connection_manager = ConnectionManager::new(devices.clone());
         loop {
-            trace!("Before waiting for next message...");
-            if rx.changed().await.is_err() {
-                info!("Channel closed, exiting message sync loop");
-                break;
+            trace!(category = "[message_traffic]"; "Before waiting for next message...");
+            match self.cancellation_token.wait_on(rx.changed()).await {
+                Err(_) => {
+                    trace!(category = "[message_traffic]"; "Cancellation requested, stopping connection manager and update publishing loop...");
+                    connection_manager
+                        .deal_with_connection_status_change_and_manage_periodic_publishing(&self, false)
+                        .await?;
+                    continue;
+                }
+                Ok(Err(_)) => {
+                    trace!(category = "[message_traffic]"; "Channel closed, exiting message sync loop");
+                    return Err(Error::ChannelClosed);
+                }
+                Ok(Ok(_)) => {
+                    trace!(category = "[message_traffic]"; "Channel changed, processing message...");
+                }
             }
             let message = rx.borrow_and_update().clone();
-            trace!("Got next channel message: {:?}", message);
+            trace!(category = "[message_traffic]"; "Got next channel message: {:?}", message);
             match message {
                 ChannelMessages::Connected(is_connected_message) => {
                     connection_manager
-                        .deal_with_connection_status_change_and_manage_periodic_publishing(
-                            &self,
-                            is_connected_message,
-                        )
+                        .deal_with_connection_status_change_and_manage_periodic_publishing(&self, is_connected_message)
                         .await?
                 }
                 ChannelMessages::Message(publish_result) => {
-                    self.deal_with_command(publish_result.clone(), devices.clone())
-                        .await?
+                    self.deal_with_command(publish_result.clone(), devices.clone()).await?
                 }
                 ChannelMessages::Stopping => {
-                    trace!("Received stop message, will stop state publishing...");
+                    trace!(category = "[message_traffic]"; "Received stop message, will stop state publishing...");
                     connection_manager
-                        .deal_with_connection_status_change_and_manage_periodic_publishing(
-                            &self, false,
-                        )
+                        .deal_with_connection_status_change_and_manage_periodic_publishing(&self, false)
                         .await?;
-                    trace!("Received stop message, will make devices unavailable...");
-                    self.make_unavailable(devices.clone()).await?;
-                    trace!("Received stop message, will disconnect...");
+                    trace!(category = "[message_traffic]"; "Processing stop message, will make devices unavailable...");
+                    self.make_unavailable().await?;
+                    trace!(category = "[message_traffic]"; "Processing stop message, will disconnect...");
                     self.disconnect().await?;
-                    trace!("Received stop message, done...");
-                }
-            }
-            trace!("Channel loop iteration complete");
-        }
-        trace!("Exiting message traffic handling function");
-        Ok(())
-    }
-
-    pub async fn publish_sensor_data_in_a_loop(
-        self,
-        devices: Arc<RwLock<Vec<Device>>>,
-        cancellation_token: CancellationToken,
-    ) {
-        // todo: propagate cancellation token to all async calls
-        let mut interval = time::interval(Duration::from_secs(15));
-        interval.tick().await; // to set the initial instant
-        loop {
-            // this is the main loop for publishing sensor data periodically
-            trace!(category = "main_loop"; "In the main loop for publishing sensor data, now will wait for next interval tick...");
-            if cancellation_token.wait_on(interval.tick()).await.is_err() {
-                debug!(category = "main_loop"; "Cancellation token triggered, stopping periodic sensor data publishing task");
-                break;
-            }
-            trace!(category = "main_loop"; "Interval ticked, now checking connection state...");
-            match cancellation_token
-                .wait_on(self.publish_sensor_data_for_all_devices(devices.clone()))
-                .await
-            {
-                Ok(Ok(())) => trace!(category = "main_loop"; "Published sensor data successfully"),
-                Ok(Err(e)) => error!(category = "main_loop"; "Error publishing sensor data: {e}"),
-                Err(_) => {
-                    debug!(category = "main_loop"; "Cancellation token triggered while publishing sensor data, stopping periodic sensor data publishing task...");
+                    trace!(category = "[message_traffic]"; "Processing stop message, exiting message sync loop...");
+                    connection_manager.stop().await;
+                    trace!(category = "[message_traffic]"; "Processed stop message, done.");
                     break;
                 }
             }
-            trace!(category = "main_loop"; "Completed one iteration of periodic sensor data publishing task, now continuing...");
+            trace!(category = "[message_traffic]"; "Channel loop iteration complete");
         }
+        trace!(category = "[message_traffic]"; "Exiting message traffic handling function");
+        Ok(())
+    }
+
+    pub async fn publish_to_client(&self, topic: String, payload: String) -> Result<()> {
+        Ok(self
+            .run_with_cancellation_and_timeout(self.client.publish(topic, QoS::AtLeastOnce, false, payload))
+            .await??)
+    }
+
+    pub async fn subscribe_to_client(&self, topic: String) -> Result<()> {
+        Ok(self
+            .run_with_cancellation_and_timeout(self.client.subscribe(topic, QoS::AtLeastOnce))
+            .await??)
+    }
+
+    async fn run_with_cancellation_and_timeout<F>(&self, future: F) -> Result<<F as std::future::IntoFuture>::Output>
+    where
+        F: std::future::IntoFuture,
+    {
+        let result = self
+            .cancellation_token
+            .wait_on(timeout(self.default_timeout, future.into_future()))
+            .await??;
+        Ok(result)
     }
 }
 
+#[derive(Debug, PartialEq)]
 pub struct CommandResult {
     pub handled: bool,
-    pub state_update: Option<Vec<EntityData>>,
+    pub state_update: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -698,17 +665,33 @@ pub struct PublishResult {
 
 struct ConnectionManager {
     connected: bool,
-    join_handle: Option<JoinHandle<()>>, // todo: remove join handle? Using cancellation token should be enough
+    join_handle: Option<JoinHandle<()>>,
     cancellation_token_source: Option<CancellationTokenSource>,
-    devices: Arc<RwLock<Vec<Device>>>,
+    devices: Devices,
 }
 
 impl ConnectionManager {
+    fn new(devices: Devices) -> Self {
+        Self {
+            connected: false,
+            join_handle: None,
+            cancellation_token_source: None,
+            devices,
+        }
+    }
+
+    async fn stop(mut self) {
+        trace!("Stopping ConnectionManager, cancelling periodic publishing task...");
+        if let Some(cancellation_token_source) = &mut self.cancellation_token_source {
+            cancellation_token_source.cancel().await;
+        }
+    }
+
     pub async fn deal_with_connection_status_change_and_manage_periodic_publishing(
         &mut self,
         device_manager: &DeviceManager,
         is_connected_message: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<()> {
         trace!(
             "Dealing with connection status change, is_connected_message: {is_connected_message}, current connected state: {}",
             self.connected
@@ -721,22 +704,14 @@ impl ConnectionManager {
                 trace!("Periodic sensor data publishing task is not running, skipping abort");
                 return Ok(());
             } else if self.connected {
-                trace!(
-                    "Was connected, now is disconnected, will abort periodic sensor data publishing task"
-                );
+                trace!("Was connected, now is disconnected, will abort periodic sensor data publishing task");
             } else {
-                trace!(
-                    "Was not connected, now is connected, will start periodic sensor data publishing task below"
-                );
+                trace!("Was not connected, now is connected, will start periodic sensor data publishing task below");
             }
             debug!("Aborting periodic sensor data publishing task...");
-            self.cancellation_token_source
-                .take()
-                .unwrap()
-                .cancel()
-                .await;
+            self.cancellation_token_source.take().unwrap().cancel().await;
             let join_handle = self.join_handle.take().unwrap();
-            let timeout_duration = Duration::from_secs(5);
+            let timeout_duration = DURATION_UNTIL_SHUTDOWN;
             let wait_until = Utc::now() + timeout_duration;
             trace!(
                 "Waiting for periodic sensor data publishing task to finish, will timeout in {}...",
@@ -744,7 +719,7 @@ impl ConnectionManager {
             );
             while !join_handle.is_finished() && Utc::now() < wait_until {
                 trace!("Waiting for periodic sensor data publishing task to finish...");
-                time::sleep(Duration::from_millis(100)).await;
+                time::sleep(DURATION_QUICK_CYCLE).await;
             }
             if join_handle.is_finished() {
                 trace!("Periodic sensor data publishing task finished.");
@@ -761,17 +736,598 @@ impl ConnectionManager {
             trace!("Device manager initialized, starting periodic sensor data publishing task...");
             let devices_clone = self.devices.clone();
             let mut cancellation_token_source = CancellationTokenSource::new();
-            let cancellation_token = cancellation_token_source.create_token();
+            let cancellation_token = cancellation_token_source.create_token().await;
             self.cancellation_token_source = Some(cancellation_token_source);
             let other_mqtt_device = device_manager.clone();
             self.join_handle = Some(tokio::spawn(async move {
-                other_mqtt_device
-                    .publish_sensor_data_in_a_loop(devices_clone.clone(), cancellation_token)
-                    .await;
+                let _publish_sensor_data_result =
+                    Self::publish_sensor_data_in_a_loop(other_mqtt_device, devices_clone.clone(), cancellation_token)
+                        .await; // todo: handle result
             }));
         } else {
             trace!("Channel received Disconnected message");
         }
         Ok(())
+    }
+
+    /// This runs in a separate thread, publishing sensor data periodically until cancellation is requested.
+    pub async fn publish_sensor_data_in_a_loop(
+        device_manager: DeviceManager,
+        devices: Devices,
+        cancellation_token: CancellationToken,
+    ) -> Result<()> {
+        let event_producers = TimedUpdateEventProvider::create_event_producers(
+            devices,
+            cancellation_token,
+            device_manager.publish_interval, // todo: take as param?
+        );
+        let mut join_set: JoinSet<Result<()>> = JoinSet::new();
+        for mut event_producer in event_producers.into_iter() {
+            join_set.spawn({
+                let device_manager_clone = device_manager.clone();
+                async move {
+                    loop {
+                        match event_producer.next_event().await {
+                            Err(err) => {
+                                error!(category = "publish_sensor_data_in_a_loop"; "Error getting next event from update engine: {err}");
+                            }
+                            Ok(Some(entities_data)) => {
+                                for entity_data in entities_data {
+                                    match entity_data {
+                                        UpdateEvent::Data(data) => {
+                                            trace!("Publishing sensor data to Home Assistant...");
+                                            if let Err(err) = device_manager_clone.publish_sensor_data(data).await {
+                                                error!(category = "publish_sensor_data_in_a_loop"; "Error publishing sensor data: {err}");
+                                            } else {
+                                                trace!("Published all sensor data to Home Assistant");
+                                            }
+                                        }
+                                        UpdateEvent::DeviceUpdated(_) => {
+                                            trace!("Device updated, not handled yet..."); // todo: handle device update
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                trace!("Done publishing sensor data loop, exiting...");
+                                break;
+                            }
+                        }
+                    }
+                Ok(())
+                }
+            });
+        }
+        let results = join_set.join_all().await;
+        if !results.into_iter().all(|r| r.is_ok()) {
+            error!(category = "publish_sensor_data_in_a_loop"; "One or more tasks in periodic sensor data publishing failed.");
+            return Err(Error::PublishSensorLoop);
+        } else {
+            trace!("All tasks in periodic sensor data publishing completed successfully.");
+        }
+        Ok(())
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    Elapsed(#[from] time::error::Elapsed),
+    #[error(transparent)]
+    Devices(#[from] crate::devices::Error),
+    #[error("Client error: {0}")]
+    Mqtt(String),
+    #[error(transparent)]
+    EventHandling(#[from] EventHandlingError),
+    #[error(transparent)]
+    Send(#[from] tokio::sync::watch::error::SendError<ChannelMessages>),
+    #[error(transparent)]
+    Tls(#[from] rustls::Error),
+    #[error(transparent)]
+    UpdateEngine(#[from] crate::update_engine::Error),
+    #[error("Connection error: {0}")]
+    Connection(String),
+    #[error("Channel closed")]
+    ChannelClosed,
+    #[error(transparent)]
+    CancellationRequested(#[from] crate::cancellation_token::Error),
+    #[error("Error in publish sensor loop")]
+    PublishSensorLoop,
+}
+
+impl From<ClientError> for Error {
+    fn from(e: ClientError) -> Self {
+        Error::Mqtt(e.to_string())
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum EventHandlingError {
+    #[error(transparent)]
+    Send(#[from] tokio::sync::watch::error::SendError<ChannelMessages>),
+    #[error("{0}")]
+    Connection(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future;
+
+    use crate::devices::test_module::test_helpers::*;
+    use crate::devices::{EntityDetails, MockAnEntityType, MockEntity, MockEntityDataProvider};
+
+    use super::*;
+    use mockall::predicate;
+    use mqtt_client::__mock_MockAsyncClient::__new::Context;
+    use serde_json::json;
+    use serial_test::serial;
+    use tokio::time::Duration;
+    fn create_mock_client(setup_fn: fn(&mut AsyncClient)) -> Context {
+        let mut mock_client = AsyncClient::default();
+        setup_fn(&mut mock_client);
+        let ctx = AsyncClient::new_context();
+        ctx.expect().return_once(move |_, _| (mock_client, EventLoop::new()));
+        ctx
+    }
+
+    fn make_device_manager() -> DeviceManager {
+        let (manager, _, _) = DeviceManager::new(
+            "localhost".to_string(),
+            1883,
+            "node1".to_string(),
+            "u".to_string(),
+            "p".to_string(),
+            true,
+            Duration::from_millis(10),
+            CancellationToken::default(),
+        )
+        .unwrap();
+        manager
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_publish_entities_discovery() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_publish()
+                .with(
+                    predicate::function(|t: &String| t == "homeassistant/device/test_device/config"),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::always(),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+        });
+        make_device_manager()
+            .publish_entities_discovery(make_empty_devices())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_subscribe_to_commands() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_subscribe()
+                .with(
+                    predicate::eq("homeassistant/status".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                )
+                .returning(|_, _| Box::pin(async { Ok(()) }))
+                .times(1);
+        });
+        make_device_manager()
+            .subscribe_to_commands(make_empty_devices())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_publish_sensor_data() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_publish()
+                .with(
+                    predicate::eq("a/topic".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::eq("payload1".to_string()),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+            mock_client
+                .expect_publish()
+                .with(
+                    predicate::eq("b/topic".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::eq("42".to_string()),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+        });
+        make_device_manager()
+            .publish_sensor_data(hashmap! {
+                "a/topic".to_string() => "payload1".to_string(),
+                "b/topic".to_string() => "42".to_string()
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_set_availability_only_when_connected() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_publish()
+                .with(
+                    predicate::eq("node1/availability".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::eq("online".to_string()),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+        });
+        let manager = make_device_manager();
+        manager.set_availability(true).await.unwrap();
+        manager.set_connected(true);
+        manager.set_availability(true).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_disconnect_only_when_connected() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client.expect_try_disconnect().returning(|| Ok(())).times(1);
+        });
+        let manager = make_device_manager();
+        manager.disconnect().await.unwrap();
+        manager.set_connected(true);
+        manager.disconnect().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_initialize_sequence_with_empty_device() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_publish()
+                .with(
+                    predicate::function(|t: &String| t == "homeassistant/device/test_device/config"),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::always(),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+            mock_client
+                .expect_subscribe()
+                .with(
+                    predicate::eq("homeassistant/status".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                )
+                .returning(|_, _| Box::pin(async { Ok(()) }))
+                .times(1);
+            mock_client
+                .expect_clone()
+                .returning(|| {
+                    let mut cloned_mock_client = AsyncClient::default();
+                    cloned_mock_client
+                        .expect_publish()
+                        .with(
+                            predicate::eq("dev1/availability".to_string()),
+                            predicate::eq(QoS::AtLeastOnce),
+                            predicate::eq(false),
+                            predicate::eq("online".to_string()),
+                        )
+                        .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                        .times(1);
+                    cloned_mock_client
+                })
+                .times(1);
+        });
+        make_device_manager().initialize(make_empty_devices()).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_initialize_sequence_with_device_with_entities_sends_state_and_subscribes() {
+        let _c = create_mock_client(|client| {
+            client
+                .expect_publish()
+                .with(
+                    predicate::function(|t: &String| t == "homeassistant/device/test_device/config"),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::always(),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+            client
+                .expect_subscribe()
+                .with(
+                    predicate::eq("homeassistant/status".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                )
+                .returning(|_, _| Box::pin(async { Ok(()) }))
+                .times(1);
+            client
+                .expect_subscribe()
+                .with(
+                    predicate::eq("dev1/test_switch/command".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                )
+                .returning(|_, _| Box::pin(async { Ok(()) }))
+                .times(1);
+            client
+                .expect_publish()
+                .with(
+                    predicate::eq("dev1/test_switch/state".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::eq("OFF".to_string()),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+            client
+                .expect_clone()
+                .returning(|| {
+                    let mut cloned_mock_client = AsyncClient::default();
+                    cloned_mock_client
+                        .expect_publish()
+                        .with(
+                            predicate::eq("dev1/availability".to_string()),
+                            predicate::eq(QoS::AtLeastOnce),
+                            predicate::eq(false),
+                            predicate::eq("online".to_string()),
+                        )
+                        .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                        .times(1);
+                    cloned_mock_client
+                })
+                .times(1);
+        });
+        let mut entity_type = MockAnEntityType::new();
+        entity_type.expect_json_for_discovery().returning(|_, _| {
+            Ok(json!({
+                "name": "Test Switch",
+                "unique_id": "node1_dev1_test_switch",
+                "state_topic": "dev1/test_switch/state",
+                "command_topic": "dev1/test_switch/command",
+                "availability_topic": "dev1/availability",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "device": {
+                    "identifiers": ["test_device"],
+                    "name": "Test Device",
+                    "manufacturer": "Mfg",
+                    "sw_version": "1.0.0"
+                }
+            }))
+        });
+        entity_type.expect_details().return_const(
+            EntityDetails::new("dev1".to_string(), "Test Switch".to_string(), "mdi:switch".to_string())
+                .add_command("dev1/test_switch/command".to_string()),
+        );
+        let mut mock_entity_data_provider = MockEntityDataProvider::new();
+        mock_entity_data_provider
+            .expect_get_entity_data()
+            .returning(|_, _| {
+                Box::pin(future::ready(Ok(
+                    hashmap! {"dev1/test_switch/state".to_string() => "OFF".to_string()},
+                )))
+            })
+            .times(1);
+        let mut mock_entity = MockEntity::new();
+        mock_entity
+            .expect_get_entity_data_provider()
+            .return_const(Box::new(mock_entity_data_provider))
+            .times(1);
+        mock_entity
+            .expect_get_data()
+            .return_const(Box::new(entity_type))
+            .times(2);
+        let mut device = make_empty_device();
+        device.entities.push(Box::new(mock_entity));
+        let manager = make_device_manager();
+        manager.set_connected(true);
+        manager
+            .initialize(Devices::new_from_single_device(device, CancellationToken::default()))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_deal_with_command_publishes_without_state_update() {
+        let _c = create_mock_client(|_| {});
+        let mut mock_entity = MockEntity::new();
+        mock_entity
+            .expect_handle_command()
+            .with(
+                predicate::eq("some/command"),
+                predicate::eq("ignored"),
+                predicate::always(),
+            )
+            .returning(|_, _, _| {
+                Box::pin(async {
+                    Ok(CommandResult {
+                        handled: true,
+                        state_update: None,
+                    })
+                })
+            })
+            .times(1);
+        let mut device = make_empty_device();
+        if log_enabled!(log::Level::Debug) {
+            let mut entity_type = MockAnEntityType::new();
+            entity_type.expect_details().return_const(
+                EntityDetails::new("dev1".to_string(), "Test Switch".to_string(), "mdi:switch".to_string())
+                    .add_command("dev1/test_switch/command".to_string()),
+            );
+            mock_entity
+                .expect_get_data()
+                .return_const(Box::new(entity_type))
+                .times(1 + if log_enabled!(log::Level::Trace) { 1 } else { 0 });
+        }
+        device.entities.push(Box::new(mock_entity));
+        make_device_manager()
+            .deal_with_command(
+                PublishResult {
+                    topic: "some/command".to_string(),
+                    payload: "ignored".to_string(),
+                },
+                Devices::new_from_single_device(device, CancellationToken::default()),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_deal_with_command_publishes_with_state_update() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_publish()
+                .with(
+                    predicate::eq("x/topic".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::eq("1".to_string()),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+            mock_client
+                .expect_publish()
+                .with(
+                    predicate::eq("y/topic".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::eq("ON".to_string()),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+        });
+        let mut mock_entity = MockEntity::new();
+        mock_entity
+            .expect_handle_command()
+            .with(
+                predicate::eq("some/command"),
+                predicate::eq("ignored"),
+                predicate::always(),
+            )
+            .returning(|_, _, _| {
+                Box::pin(async {
+                    Ok(CommandResult {
+                        handled: true,
+                        state_update: Some(hashmap! {
+                            "x/topic".to_string() => "1".to_string(),
+                            "y/topic".to_string() => "ON".to_string()
+                        }),
+                    })
+                })
+            })
+            .times(1);
+        if log_enabled!(log::Level::Debug) {
+            let mut entity_type = MockAnEntityType::new();
+            entity_type.expect_details().return_const(
+                EntityDetails::new("dev1".to_string(), "Test Switch".to_string(), "mdi:switch".to_string())
+                    .add_command("dev1/test_switch/command".to_string()),
+            );
+            mock_entity
+                .expect_get_data()
+                .return_const(Box::new(entity_type))
+                .times(1 + if log_enabled!(log::Level::Trace) { 1 } else { 0 });
+        }
+        let mut device = make_empty_device();
+        device.entities.push(Box::new(mock_entity));
+        make_device_manager()
+            .deal_with_command(
+                PublishResult {
+                    topic: "some/command".to_string(),
+                    payload: "ignored".to_string(),
+                },
+                Devices::new_from_single_device(device, CancellationToken::default()),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_remove_entities() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_publish()
+                .with(
+                    predicate::eq("node1/availability".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::eq("offline".to_string()),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+            mock_client
+                .expect_publish()
+                .with(
+                    predicate::eq("homeassistant/device/test_device/config".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::eq("".to_string()),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+        });
+        let manager = make_device_manager();
+        manager.set_connected(true);
+        manager.remove_entities(make_empty_devices()).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_publish_sensor_data_for_all_devices_publishes_new_data() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_publish()
+                .with(
+                    predicate::eq("dev1/test_sensor/state".to_string()),
+                    predicate::eq(QoS::AtLeastOnce),
+                    predicate::eq(false),
+                    predicate::eq("42".to_string()),
+                )
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
+                .times(1);
+        });
+
+        let mut mock_entity_data_provider = MockEntityDataProvider::new();
+        mock_entity_data_provider
+            .expect_get_entity_data()
+            .returning(|_, _| {
+                Box::pin(future::ready(Ok(
+                    hashmap! {"dev1/test_sensor/state".to_string() => "42".to_string()},
+                )))
+            })
+            .times(1);
+
+        let mut mock_entity = MockEntity::new();
+        mock_entity
+            .expect_get_entity_data_provider()
+            .return_const(Box::new(mock_entity_data_provider))
+            .times(1);
+
+        let mut device = make_empty_device();
+        device.entities.push(Box::new(mock_entity));
+        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+
+        let manager = make_device_manager();
+        manager.set_connected(true);
+
+        manager.publish_sensor_data_for_all_devices(devices).await.unwrap();
     }
 }

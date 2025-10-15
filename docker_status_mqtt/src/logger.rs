@@ -1,14 +1,25 @@
-use flexi_logger::{AdaptiveFormat, DeferredNow, Logger, TS_DASHES_BLANK_COLONS_DOT_BLANK, style};
+use flexi_logger::{AdaptiveFormat, DeferredNow, Logger, LoggerHandle, TS_DASHES_BLANK_COLONS_DOT_BLANK, style};
 use log::Record;
 use std::{env, io::IsTerminal};
 
-pub fn start() -> Result<(), Box<dyn std::error::Error>> {
+pub type Result<T> = std::result::Result<T, Error>;
+
+pub fn start() -> Result<LoggerHandle> {
     let mut logger = Logger::try_with_env_or_str("info")?
         .log_to_stdout()
         .set_palette("9;11;15;14;12".to_owned());
+    #[cfg(test)]
+    {
+        logger = logger.write_mode(flexi_logger::WriteMode::SupportCapture);
+    }
+    #[allow(unused_mut)]
     let mut cargo_run = false;
     if env::var("CARGO_MANIFEST_DIR").is_ok() {
-        cargo_run = true;
+        // cargo_run = true;
+        #[cfg(not(test))]
+        {
+            cargo_run = true;
+        }
         logger = logger.adaptive_format_for_stdout(AdaptiveFormat::Detailed);
     } else {
         logger = logger.format(if std::io::stdout().is_terminal() {
@@ -17,11 +28,11 @@ pub fn start() -> Result<(), Box<dyn std::error::Error>> {
             detailed_format
         });
     }
-    logger.start()?;
+    let logger_handle = logger.start()?;
     if cargo_run {
         warn!("Running from cargo...");
     }
-    Ok(())
+    Ok(logger_handle)
 }
 
 // adapted from flexi_logger:
@@ -29,7 +40,7 @@ fn detailed_format(
     w: &mut dyn std::io::Write,
     now: &mut DeferredNow,
     record: &Record,
-) -> Result<(), std::io::Error> {
+) -> std::result::Result<(), std::io::Error> {
     write!(
         w,
         "[{}] {} [{}]: ",
@@ -46,7 +57,7 @@ fn colored_detailed_format(
     w: &mut dyn std::io::Write,
     now: &mut DeferredNow,
     record: &Record,
-) -> Result<(), std::io::Error> {
+) -> std::result::Result<(), std::io::Error> {
     let level = record.level();
     write!(
         w,
@@ -60,10 +71,7 @@ fn colored_detailed_format(
 }
 
 // originally from flexi_logger:
-fn write_key_value_pairs(
-    w: &mut dyn std::io::Write,
-    record: &Record<'_>,
-) -> Result<(), std::io::Error> {
+fn write_key_value_pairs(w: &mut dyn std::io::Write, record: &Record<'_>) -> std::result::Result<(), std::io::Error> {
     if record.key_values().count() > 0 {
         write!(w, "{{")?;
         let mut kv_stream = KvStream(w, false);
@@ -81,7 +89,7 @@ where
         &mut self,
         key: log::kv::Key<'kvs>,
         value: log::kv::Value<'kvs>,
-    ) -> Result<(), log::kv::Error> {
+    ) -> std::result::Result<(), log::kv::Error> {
         if self.1 {
             write!(self.0, ", ")?;
         }
@@ -89,4 +97,10 @@ where
         self.1 = true;
         Ok(())
     }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    Logger(#[from] flexi_logger::FlexiLoggerError),
 }

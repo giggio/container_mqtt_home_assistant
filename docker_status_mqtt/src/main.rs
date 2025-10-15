@@ -1,85 +1,126 @@
-extern crate docker_status_mqtt_proc_macros;
 #[macro_use]
 extern crate log;
+use clap::Parser;
+extern crate docker_status_mqtt_proc_macros;
 #[macro_use]
 mod macros;
-
-use std::sync::Arc;
-
-use rumqttc::v5::EventLoop;
-use tokio::sync::{RwLock, watch::Receiver};
-mod device_manager;
-use device_manager::*;
-
-use crate::{
-    ha_devices::{Device, DeviceProvider},
-    sample_device::SampleDeviceProvider,
-};
-
+mod args;
 mod cancellation_token;
-mod datetime;
+mod device_manager;
+mod devices;
 mod docker;
-mod ha_devices;
+mod helpers;
 mod logger;
 mod sample_device;
-mod sleep;
-// mod observer;
+mod update_engine;
+
+use crate::{
+    args::*,
+    cancellation_token::CancellationTokenSource,
+    device_manager::*,
+    devices::{DeviceProvider, Devices},
+    sample_device::SampleDeviceProvider,
+};
+mod observer;
 // use docker::*;
 
+pub type Result<T> = std::result::Result<T, AppError>;
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    logger::start()?;
-    run().await?;
-    info!("Shutting down...");
+async fn main() -> std::result::Result<(), String> {
+    let _logger_handle = logger::start().map_err(|e| format!("Error starting logger: {e}"))?;
+    run(Cli::parse()).await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let device_name = std::env::var("DEVICE_NAME").unwrap_or("Rust Server Device".to_string());
-    let device_providers: Vec<Box<dyn DeviceProvider>> = vec![Box::new(SampleDeviceProvider::new(
-        device_name.clone(),
-        true,
-    ))];
-    let devices = futures::future::join_all(
-        device_providers
-            .iter()
-            .map(|provider| provider.get_devices()),
-    )
-    .await
-    .into_iter()
-    .flatten()
-    .collect::<Vec<Device>>();
-    let devices_arc = Arc::new(RwLock::new(devices));
-
-    let (mut device_manager, eventloop, rx) = create_mqtt_connection()?;
-    device_manager.publish_sensor_data_periodically(rx, devices_arc.clone())?;
-    info!("Configured, initiating connection and message exchange...");
-    device_manager.deal_with_event_loop(eventloop).await?;
+async fn run(cli: Cli) -> Result<()> {
+    match cli.command {
+        args::Commands::Run {
+            mqtt_broker_info,
+            sample_device_name,
+            publish_interval,
+            device_manager_id: node_id,
+        } => {
+            let mut device_providers: Vec<Box<dyn DeviceProvider>> = vec![];
+            if let Some(name) = sample_device_name {
+                device_providers.push(Box::new(SampleDeviceProvider::new(
+                    name,
+                    "Dependent device".to_string(),
+                    true,
+                )));
+            }
+            if device_providers.is_empty() {
+                eprintln!(
+                    "No device providers configured, nothing to do. Use --sample-device-name to add a sample device."
+                );
+                return Ok(());
+            }
+            let mut cancellation_token_source = CancellationTokenSource::new();
+            deal_with_ctrl_c(cancellation_token_source.clone());
+            let (mut device_manager, eventloop, rx) = DeviceManager::new(
+                mqtt_broker_info.host,
+                mqtt_broker_info.port,
+                node_id.clone(),
+                mqtt_broker_info.username,
+                mqtt_broker_info.password,
+                mqtt_broker_info.disable_tls,
+                publish_interval,
+                cancellation_token_source.create_token().await,
+            )?;
+            let devices = Devices::from_device_providers(
+                device_providers,
+                device_manager.availability_topic(),
+                cancellation_token_source.create_token().await,
+            )
+            .await;
+            device_manager.publish_sensor_data_periodically(rx, devices)?;
+            info!("Configured, initiating connection and message exchange...");
+            device_manager.deal_with_event_loop(eventloop).await?;
+        }
+    }
+    if cli.verbose {
+        info!("Shutting down...");
+    }
     Ok(())
 }
 
-fn create_mqtt_connection()
--> Result<(DeviceManager, EventLoop, Receiver<ChannelMessages>), Box<dyn std::error::Error>> {
-    let broker_host = std::env::var("MQTT_BROKER_HOST").unwrap_or("localhost".to_string());
-    let broker_port: u16 = std::env::var("MQTT_BROKER_PORT")
-        .unwrap_or("8883".to_string())
-        .parse()
-        .unwrap_or(8883);
-    let username = std::env::var("MQTT_USERNAME").unwrap_or("mqtt_user".to_string());
-    let password = std::env::var("MQTT_PASSWORD").unwrap_or("password".to_string());
-    let disable_tls = matches!(
-        std::env::var("DISABLE_TLS")
-            .unwrap_or("false".to_string())
-            .to_lowercase()
-            .as_str(),
-        "1" | "true"
-    );
-    DeviceManager::new(
-        &broker_host,
-        broker_port,
-        "temp_connection_id", // todo: search for a way to identify the connection, which may provide several devices
-        &username,
-        &password,
-        disable_tls,
-    )
+fn deal_with_ctrl_c(mut cancellation_token_source: CancellationTokenSource) {
+    tokio::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(_) => {
+                trace!("Ctrl-C received, cancelling cancellation token source...");
+                cancellation_token_source.cancel().await;
+            }
+            Err(e) => {
+                error!("Error listening for Ctrl-C signal: {e}");
+            }
+        }
+    });
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum AppError {
+    #[error(transparent)]
+    Logger(#[from] logger::Error),
+    #[error(transparent)]
+    DeviceManager(#[from] device_manager::Error),
+    #[error(transparent)]
+    Devices(#[from] devices::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[ctor::ctor]
+    static LOGGER: flexi_logger::LoggerHandle = {
+        let logger_handle_result = logger::start();
+        match logger_handle_result {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Error starting logger: {e}");
+                panic!("Error starting logger: {e}");
+            }
+        }
+    };
 }

@@ -27,5 +27,5 @@ services:
       TZ: America/Sao_Paulo
       USER: mqtt_user
       PASSWORD: password
-    entrypoint: "sh -c 'mosquitto_sub -v --username $$USER --pw $$PASSWORD -t \"#\"'"
+    entrypoint: "sh -c 'mosquitto_sub -v --username $$USER --pw $$PASSWORD -t \"#\" | while IFS= read -r line; do echo \"$$(date '\"'\"'+%Y-%m-%d %H:%M:%S'\"'\"') $$line\"; done'"
     network_mode: "container:mosquitto"

@@ -2,23 +2,23 @@
 mod tests {
     use docker_status_mqtt_proc_macros::*;
 
-    pub struct ComponentDetails {
+    pub struct EntityDetails {
         pub id: String,
     }
 
-    pub trait ComponentDetailsGetter {
-        fn details(&self) -> &ComponentDetails;
+    pub trait EntityDetailsGetter {
+        fn details(&self) -> &EntityDetails;
     }
 
-    #[derive(ComponentDetailsGetter)]
+    #[derive(EntityDetailsGetter)]
     pub struct Switch {
-        pub details: ComponentDetails,
+        pub details: EntityDetails,
     }
 
     #[test]
     fn it_works() {
         let switch = Switch {
-            details: ComponentDetails {
+            details: EntityDetails {
                 id: "switch_1".to_string(),
             },
         };
