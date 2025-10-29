@@ -20,10 +20,10 @@ pub struct Switch {
 }
 
 impl Switch {
-    pub async fn new(device_identifier: String, name: String, icon: String, device_class: Option<String>) -> Self {
-        Self::new_with_details(EntityDetails::new(device_identifier, name, icon), device_class).await
+    pub fn new(device_identifier: String, name: String, icon: String, device_class: Option<String>) -> Self {
+        Self::new_with_details(EntityDetails::new(device_identifier, name, icon), device_class)
     }
-    pub async fn new_with_details(details: EntityDetails, device_class: Option<String>) -> Self {
+    pub fn new_with_details(details: EntityDetails, device_class: Option<String>) -> Self {
         let command_topic = details.get_topic_for_command(None);
         Switch {
             details: details.add_command(command_topic.clone()),
@@ -76,8 +76,7 @@ mod tests {
             "Test Switch".to_string(),
             "mdi:switch".to_string(),
             Some("switch".to_string()),
-        )
-        .await;
+        );
         assert_eq!(switch.command_topic, "dev1/test_switch/command");
         assert!(
             switch
@@ -95,8 +94,7 @@ mod tests {
             "Test Switch".to_string(),
             "mdi:switch".to_string(),
             None,
-        )
-        .await;
+        );
         let json = switch
             .json_for_discovery(&device, CancellationToken::default())
             .await
@@ -128,8 +126,7 @@ mod tests {
             "Outlet Switch".to_string(),
             "mdi:power-socket".to_string(),
             Some("outlet".to_string()),
-        )
-        .await;
+        );
         let json = switch
             .json_for_discovery(&device, CancellationToken::default())
             .await

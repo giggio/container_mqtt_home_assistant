@@ -1,4 +1,5 @@
-use std::{collections::HashMap, fmt::Debug};
+use hashbrown::HashMap;
+use std::fmt::Debug;
 
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use serde_json::{Map, Value, json};
@@ -36,6 +37,22 @@ impl Device {
         }
     }
 
+    pub fn new_with_entities(
+        details: DeviceDetails,
+        origin: DeviceOrigin,
+        availability_topic: String,
+        entities: Vec<Box<dyn Entity>>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
+        Self {
+            details,
+            origin,
+            entities,
+            availability_topic,
+            cancellation_token,
+        }
+    }
+
     pub fn command_topics(&self) -> Vec<String> {
         let mut all_command_topics = Vec::new();
         for entity in &self.entities {
@@ -58,11 +75,8 @@ impl Device {
     pub async fn get_entities_data(&self) -> Result<HashMap<String, String>> {
         let mut entities_data = HashMap::<String, String>::with_capacity(self.entities.len());
         for entity in self.entities.iter() {
-            let entity_data = entity
-                .get_entity_data_provider()
-                .get_entity_data(entity.as_ref(), self.cancellation_token.clone())
-                .await?;
-            entities_data.extend(entity_data);
+            let provider_data = entity.get_entity_data(self.cancellation_token.clone()).await?;
+            entities_data.extend(provider_data);
         }
         Ok(entities_data)
     }
@@ -122,7 +136,7 @@ impl Device {
         }
         Ok(CommandResult {
             handled: false,
-            state_update: None,
+            state_update_topics: None,
         })
     }
 }
@@ -279,7 +293,7 @@ mod tests {
 
         let result = device.handle_command("unknown/topic", "payload").await.unwrap();
         assert!(!result.handled);
-        assert_eq!(result.state_update, None);
+        assert_eq!(result.state_update_topics, None);
     }
 
     #[tokio::test]
@@ -305,7 +319,7 @@ mod tests {
                 Box::pin(async move {
                     Ok(CommandResult {
                         handled: true,
-                        state_update: Some(hashmap! {"test/state".to_string() => "test_state".to_string()}),
+                        state_update_topics: Some(hashmap! {"test/state".to_string() => "1".to_string()}),
                     })
                 })
             });
@@ -314,8 +328,8 @@ mod tests {
         let result = device.handle_command("test/topic", "test_payload").await.unwrap();
         assert!(result.handled);
         assert_eq!(
-            result.state_update,
-            Some(hashmap! {"test/state".to_string() => "test_state".to_string()})
+            result.state_update_topics,
+            Some(hashmap! {"test/state".to_string() => "1".to_string()})
         );
     }
 

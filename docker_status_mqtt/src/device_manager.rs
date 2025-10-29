@@ -1,4 +1,5 @@
 use chrono::Utc;
+use hashbrown::HashMap;
 use rumqttc::{
     Transport,
     v5::{
@@ -13,7 +14,6 @@ use rumqttc::{
 };
 use rustls_platform_verifier::ConfigVerifierExt;
 use std::{
-    collections::HashMap,
     sync::{Arc, atomic},
     time::Duration,
 };
@@ -257,25 +257,18 @@ impl DeviceManager {
             }
             return Ok(());
         }
-        let command_handle_results = devices.deal_with_command(&publish_result).await?;
-        let handled_commands = command_handle_results
-            .into_iter()
-            .filter(|r| r.handled)
-            .collect::<Vec<_>>();
-        if handled_commands.is_empty() {
-            warn!(
-                "Received message on unknown topic: {} and payload:\n{}",
+        let state_updates = devices.handle_command(&publish_result).await?;
+        if state_updates.is_empty() {
+            trace!(
+                "No state updated for topic: {} and payload:\n{}",
                 publish_result.topic, publish_result.payload
             );
             return Ok(());
         }
-        for state_update in handled_commands.into_iter().filter_map(|r| r.state_update) {
-            trace!("Command resulted in state update: {state_update:?}");
-            match self.publish_sensor_data(state_update).await {
-                Ok(_) => trace!("Sensor data published after command handling"),
-                Err(e) => {
-                    error!(category = "deal_with_command"; "Error publishing sensor data after command handling: {e}")
-                }
+        match self.publish_sensor_data(state_updates).await {
+            Ok(_) => trace!("Sensor data published after command handling"),
+            Err(e) => {
+                error!(category = "deal_with_command"; "Error publishing sensor data after command handling: {e}")
             }
         }
         trace!("Completed dealing with command");
@@ -654,7 +647,7 @@ impl DeviceManager {
 #[derive(Debug, PartialEq)]
 pub struct CommandResult {
     pub handled: bool,
-    pub state_update: Option<HashMap<String, String>>,
+    pub state_update_topics: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -854,7 +847,7 @@ mod tests {
     use std::future;
 
     use crate::devices::test_module::test_helpers::*;
-    use crate::devices::{EntityDetails, MockAnEntityType, MockEntity, MockEntityDataProvider};
+    use crate::devices::{EntityDetails, MockAnEntityType, MockEntity};
 
     use super::*;
     use mockall::predicate;
@@ -1115,24 +1108,19 @@ mod tests {
             EntityDetails::new("dev1".to_string(), "Test Switch".to_string(), "mdi:switch".to_string())
                 .add_command("dev1/test_switch/command".to_string()),
         );
-        let mut mock_entity_data_provider = MockEntityDataProvider::new();
-        mock_entity_data_provider
+        let mut mock_entity = MockEntity::new();
+        mock_entity
+            .expect_get_data()
+            .return_const(Box::new(entity_type))
+            .times(2);
+        mock_entity
             .expect_get_entity_data()
-            .returning(|_, _| {
+            .returning(|_| {
                 Box::pin(future::ready(Ok(
                     hashmap! {"dev1/test_switch/state".to_string() => "OFF".to_string()},
                 )))
             })
             .times(1);
-        let mut mock_entity = MockEntity::new();
-        mock_entity
-            .expect_get_entity_data_provider()
-            .return_const(Box::new(mock_entity_data_provider))
-            .times(1);
-        mock_entity
-            .expect_get_data()
-            .return_const(Box::new(entity_type))
-            .times(2);
         let mut device = make_empty_device();
         device.entities.push(Box::new(mock_entity));
         let manager = make_device_manager();
@@ -1159,7 +1147,7 @@ mod tests {
                 Box::pin(async {
                     Ok(CommandResult {
                         handled: true,
-                        state_update: None,
+                        state_update_topics: None,
                     })
                 })
             })
@@ -1226,10 +1214,7 @@ mod tests {
                 Box::pin(async {
                     Ok(CommandResult {
                         handled: true,
-                        state_update: Some(hashmap! {
-                            "x/topic".to_string() => "1".to_string(),
-                            "y/topic".to_string() => "ON".to_string()
-                        }),
+                        state_update_topics: Some(hashmap!{"x/topic".to_string() => "1".to_string(), "y/topic".to_string() => "ON".to_string()}),
                     })
                 })
             })
@@ -1305,22 +1290,15 @@ mod tests {
                 .times(1);
         });
 
-        let mut mock_entity_data_provider = MockEntityDataProvider::new();
-        mock_entity_data_provider
+        let mut mock_entity = MockEntity::new();
+        mock_entity
             .expect_get_entity_data()
-            .returning(|_, _| {
+            .returning(|_| {
                 Box::pin(future::ready(Ok(
                     hashmap! {"dev1/test_sensor/state".to_string() => "42".to_string()},
                 )))
             })
             .times(1);
-
-        let mut mock_entity = MockEntity::new();
-        mock_entity
-            .expect_get_entity_data_provider()
-            .return_const(Box::new(mock_entity_data_provider))
-            .times(1);
-
         let mut device = make_empty_device();
         device.entities.push(Box::new(mock_entity));
         let devices = Devices::new_from_single_device(device, CancellationToken::default());

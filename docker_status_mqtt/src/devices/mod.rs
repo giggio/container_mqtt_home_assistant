@@ -1,16 +1,15 @@
 pub use crate::devices::{device::*, devices::Devices, light::Light, sensor::Sensor, switch::Switch, text::Text};
 use crate::{cancellation_token::CancellationToken, device_manager::CommandResult, helpers::*};
 use async_trait::async_trait;
+use hashbrown::HashMap;
 use serde_json::{Value, json};
-use std::{
-    collections::HashMap,
-    fmt::{Debug, Display},
-};
+use std::fmt::Debug;
 
 mod device;
 #[allow(clippy::module_inception)]
 mod devices;
 mod light;
+mod number;
 mod sensor;
 mod switch;
 mod text;
@@ -22,6 +21,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("Device provider error: {0}")]
+    DeviceProvider(String),
     #[error("Incorrect JSON structure")]
     IncorrectJsonStructure,
     #[error("Unknown error")]
@@ -30,26 +31,48 @@ pub enum Error {
 
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
-pub trait EntityDataProvider: Send + Sync + Display + Debug {
-    // todo: remove and move get_entity_data into Entity?
-    async fn get_entity_data(
-        &self,
-        entity: &dyn Entity,
-        cancellation_token: CancellationToken,
-    ) -> Result<HashMap<String, String>>;
-}
-
-#[async_trait]
-#[cfg_attr(test, mockall::automock)]
 pub trait Entity: Send + Sync + Debug {
-    fn get_entity_data_provider(&self) -> &dyn EntityDataProvider;
+    async fn get_entity_data(&self, cancellation_token: CancellationToken) -> Result<HashMap<String, String>>;
     fn get_data(&self) -> &dyn EntityType;
+    #[allow(unused_variables)]
+    async fn do_handle_command(
+        &mut self,
+        topic: &str,
+        payload: &str,
+        cancellation_token: CancellationToken,
+    ) -> Result<CommandResult> {
+        warn!(
+            "Entity {} received command for topic {topic} but has no handler implemented",
+            self.get_data().details().name
+        );
+        Ok(CommandResult {
+            handled: false,
+            state_update_topics: None,
+        })
+    }
     async fn handle_command(
         &mut self,
         topic: &str,
         payload: &str,
         cancellation_token: CancellationToken,
-    ) -> Result<CommandResult>;
+    ) -> Result<CommandResult> {
+        if !self.get_data().details().command_topics.contains(&topic.to_owned()) {
+            trace!(
+                "Entity {} received event for topic {topic} and CANNOT handle it",
+                self.get_data().details().name
+            );
+            Ok(CommandResult {
+                handled: false,
+                state_update_topics: None,
+            })
+        } else {
+            trace!(
+                "Entity {} received event for topic {topic} and CAN handle it",
+                self.get_data().details().name
+            );
+            self.do_handle_command(topic, payload, cancellation_token).await
+        }
+    }
 }
 
 #[async_trait]
@@ -85,12 +108,13 @@ pub struct EntityDetails {
 }
 
 impl EntityDetails {
-    pub fn new(device_identifier: String, name: String, icon: String) -> Self {
+    pub fn new(device_identifier: impl Into<String>, name: impl Into<String>, icon: impl Into<String>) -> Self {
+        let name = name.into();
         EntityDetails {
-            device_identifier,
+            device_identifier: device_identifier.into(),
             id: slugify(&name),
             name,
-            icon,
+            icon: icon.into(),
             has_attributes: false,
             command_topics: Vec::new(),
         }
@@ -149,13 +173,6 @@ impl EntityDetails {
     }
 }
 
-#[cfg(test)]
-impl Display for MockEntityDataProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MockEntityDataProvider")
-    }
-}
-
 pub trait EntityDetailsGetter {
     fn details(&self) -> &EntityDetails;
 }
@@ -163,7 +180,7 @@ pub trait EntityDetailsGetter {
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait DeviceProvider {
-    async fn get_devices(&self, availability_topic: String, cancellation_token: CancellationToken) -> Devices;
+    async fn get_devices(&self, availability_topic: String, cancellation_token: CancellationToken) -> Result<Devices>;
 }
 
 #[cfg(test)]

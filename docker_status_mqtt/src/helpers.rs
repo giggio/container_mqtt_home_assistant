@@ -2,13 +2,27 @@ use std::time::Duration;
 
 use chrono_humanize::{Accuracy, HumanTime, Tense};
 
-pub fn slugify(name: &str) -> String {
-    guls::slugify(name).replace('-', "_")
+pub fn slugify(name: impl Into<String>) -> String {
+    guls::slugify(name.into()).replace('-', "_")
 }
 
 pub fn pretty_format(duration: Duration) -> String {
     let chrono_duration = chrono::Duration::from_std(duration).unwrap();
     HumanTime::from(chrono_duration).to_text_en(Accuracy::Precise, Tense::Present)
+}
+
+pub fn hostname() -> String {
+    #[cfg(test)]
+    {
+        "MY_HOSTNAME".into()
+    }
+    #[cfg(not(test))]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(rustix::system::uname().nodename().to_bytes().to_vec())
+            .to_string_lossy()
+            .into()
+    }
 }
 
 #[cfg(test)]

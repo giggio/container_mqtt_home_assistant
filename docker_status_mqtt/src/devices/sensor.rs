@@ -13,25 +13,36 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(EntityDetailsGetter, Debug)]
 pub struct Sensor {
     pub details: EntityDetails,
-    pub unit_of_measurement: String,
+    pub unit_of_measurement: Option<String>,
     pub device_class: Option<String>,
 }
 
 impl Sensor {
     pub fn new(
-        device_identifier: String,
-        name: String,
-        icon: String,
-        unit_of_measurement: String,
-        device_class: Option<String>,
+        device_identifier: impl Into<String>,
+        name: impl Into<String>,
+        icon: impl Into<String>,
+        unit_of_measurement: impl Into<String>,
+        device_class: impl Into<String>,
     ) -> Self {
         Self::new_with_details(
-            EntityDetails::new(device_identifier, name, icon),
-            unit_of_measurement,
-            device_class,
+            EntityDetails::new(device_identifier.into(), name.into(), icon.into()),
+            Some(unit_of_measurement.into()),
+            Some(device_class.into()),
         )
     }
-    pub fn new_with_details(details: EntityDetails, unit_of_measurement: String, device_class: Option<String>) -> Self {
+    pub fn new_simple(device_identifier: impl Into<String>, name: impl Into<String>, icon: impl Into<String>) -> Self {
+        Self::new_with_details(EntityDetails::new(device_identifier, name, icon), None, None)
+    }
+    #[allow(dead_code)]
+    pub fn new_simple_with_details(details: EntityDetails) -> Self {
+        Sensor::new_with_details(details, None, None)
+    }
+    pub fn new_with_details(
+        details: EntityDetails,
+        unit_of_measurement: Option<String>,
+        device_class: Option<String>,
+    ) -> Self {
         Sensor {
             details,
             unit_of_measurement,
@@ -74,13 +85,7 @@ mod tests {
     #[tokio::test]
     async fn test_sensor_json_for_discovery() {
         let device = create_test_device();
-        let sensor = Sensor::new(
-            "test_device".to_string(),
-            "Temperature".to_string(),
-            "mdi:thermometer".to_string(),
-            "°C".to_string(),
-            Some("temperature".to_string()),
-        );
+        let sensor = Sensor::new("test_device", "Temperature", "mdi:thermometer", "°C", "temperature");
         let json = sensor
             .json_for_discovery(&device, CancellationToken::default())
             .await
@@ -103,14 +108,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sensor_json_for_discovery_without_device_class() {
+    async fn test_sensor_json_for_discovery_without_device_class_and_unit() {
         let device = create_test_device_with_identifier("test_device");
-        let sensor = Sensor::new(
+        let sensor = Sensor::new_simple(
             "test_device".to_string(),
             "Generic Sensor".to_string(),
             "mdi:sensor".to_string(),
-            "units".to_string(),
-            None,
         );
         let json = sensor
             .json_for_discovery(&device, CancellationToken::default())
@@ -118,13 +121,13 @@ mod tests {
             .unwrap();
         let expected_json = json!({
             "generic_sensor": {
-                "device_class": null,
                 "icon": "mdi:sensor",
                 "name": "Generic Sensor",
                 "platform": "sensor",
                 "state_topic": "test_device/generic_sensor/state",
                 "unique_id": "test_device_generic_sensor",
-                "unit_of_measurement": "units"
+                "device_class": null,
+                "unit_of_measurement": null
             }
         });
         assert_eq!(
@@ -142,7 +145,11 @@ mod tests {
             "mdi:sensor".to_string(),
         )
         .has_attributes();
-        let sensor = Sensor::new_with_details(details, "units".to_string(), None);
+        let sensor = Sensor::new_with_details(
+            details,
+            Some("units".to_string()),
+            Some("some_device_class".to_string()),
+        );
         let json = sensor
             .json_for_discovery(&device, CancellationToken::default())
             .await
@@ -157,7 +164,8 @@ mod tests {
                 "platform": "sensor",
                 "state_topic": "test_device/sensor_with_attributes/state",
                 "unique_id": "test_device_sensor_with_attributes",
-                "unit_of_measurement": "units"
+                "unit_of_measurement": "units",
+                "device_class": "some_device_class"
             }
         });
         assert_eq!(

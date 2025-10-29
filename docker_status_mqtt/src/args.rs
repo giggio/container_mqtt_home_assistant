@@ -27,13 +27,16 @@ pub enum Commands {
         #[command(flatten)]
         mqtt_broker_info: MqttBrokerInfo,
 
-        #[arg(short = 'n', long, env = formatc!("{ENV_PREFIX}SAMPLE_DEVICE_NAME"), help = "Name of the sample device to use in Home Assistant (enables sample device when provided)")]
+        #[arg(short = 'n', long, env = formatc!("{ENV_PREFIX}DEVICE_NAME"), default_value_t=device_name_fn(), help = "Name of the device to use in Home Assistant. If not provided, will use 'Containers at <hostname>'")]
+        device_name: String,
+
+        #[arg(short = 's', long, env = formatc!("{ENV_PREFIX}SAMPLE_DEVICE_NAME"), help = "Name of the sample device to use in Home Assistant (enables sample device when provided)")]
         sample_device_name: Option<String>,
 
         #[arg(short = 'I', long, env = formatc!("{ENV_PREFIX}PUBLISH_INTERVAL"), value_parser = parse_duration, default_value = "5000", help = "Publish interval (in milliseconds)")]
         publish_interval: Duration,
 
-        #[arg(short = 'i', long, env = formatc!("{ENV_PREFIX}DEVICE_MANAGER_ID"), value_parser=parse_slug, default_value = "mqtt_docker", help = "Name of the Device Manager that identifies this instance to Home Assistant and group all devices (and, therefore, entities).")]
+        #[arg(short = 'i', long, env = formatc!("{ENV_PREFIX}DEVICE_MANAGER_ID"), default_value_t=device_manager_id_fn(), value_parser=parse_slug, help = "Name of the Device Manager that identifies this instance to Home Assistant and group all devices (and, therefore, entities). If not provided, will use the hostname.")]
         device_manager_id: String,
     },
 }
@@ -67,10 +70,19 @@ fn parse_slug(arg: &str) -> Result<String, String> {
     Ok(slugify(arg))
 }
 
+fn device_manager_id_fn() -> String {
+    format!("Device {}", hostname())
+}
+
+fn device_name_fn() -> String {
+    format!("Containers at {}", hostname())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+    use pretty_assertions::assert_eq;
     use std::time::Duration;
 
     #[test]
@@ -246,6 +258,7 @@ mod tests {
                         port: 1883,
                         disable_tls: false,
                     },
+                    device_name: "Containers at MY_HOSTNAME".to_string(),
                     sample_device_name: Some("Production Server".to_string()),
                     publish_interval: Duration::from_millis(15000),
                     device_manager_id: "prod_device_01".to_string(),

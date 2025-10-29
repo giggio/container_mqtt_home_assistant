@@ -7,7 +7,7 @@ pub mod test_helpers {
     use crate::{
         cancellation_token::CancellationToken,
         devices::{
-            Devices, EntityDetails, MockAnEntityType, MockEntity, MockEntityDataProvider,
+            Devices, EntityDetails, MockAnEntityType, MockEntity,
             device::{Device, DeviceDetails, DeviceOrigin},
         },
     };
@@ -63,22 +63,18 @@ pub mod test_helpers {
             EntityDetails::new("dev1".to_string(), "Test Name".to_string(), "testicon".to_string())
                 .add_command("dev1/test_name/command".to_string()),
         );
-        let mut mock_entity_data_provider = MockEntityDataProvider::new();
-        mock_entity_data_provider
+        let mut mock_entity = MockEntity::new();
+        mock_entity
+            .expect_get_data()
+            .return_const(Box::new(entity_type))
+            .times(..);
+        mock_entity
             .expect_get_entity_data()
-            .returning(|_, _| {
+            .returning(|_| {
                 Box::pin(future::ready(Ok(
                     hashmap! {"dev1/test_name/state".to_string() => "test_state".to_string()},
                 )))
             })
-            .times(..);
-        let mut mock_entity = MockEntity::new();
-        mock_entity
-            .expect_get_entity_data_provider()
-            .return_const(Box::new(mock_entity_data_provider));
-        mock_entity
-            .expect_get_data()
-            .return_const(Box::new(entity_type))
             .times(..);
         mock_entity
     }

@@ -45,7 +45,7 @@ macro_rules! hashmap {
     ($($key:expr => $val:expr),*) => ({
         let start_capacity = $crate::const_expr_count!($($key);*);
         #[allow(unused_mut)]
-        let mut map = ::std::collections::HashMap::with_capacity(start_capacity);
+        let mut map = ::hashbrown::HashMap::with_capacity(start_capacity);
         $( map.insert($key, $val); )*
         map
     });

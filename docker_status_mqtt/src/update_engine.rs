@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -77,7 +77,7 @@ where
     }
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // todo: use DeviceUpdated variant in docker provider
 #[derive(Debug, PartialEq, Clone)]
 pub enum UpdateEvent {
     Data(HashMap<String, String>),
@@ -180,10 +180,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
-    use crate::{
-        cancellation_token::CancellationTokenSource,
-        devices::test_module::test_helpers::{get_mock_entity, make_empty_device},
-    };
+    use crate::{cancellation_token::CancellationTokenSource, devices::test_module::test_helpers::*};
     use pretty_assertions::assert_eq;
 
     #[tokio::test]
