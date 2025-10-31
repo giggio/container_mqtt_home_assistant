@@ -1,5 +1,5 @@
 use hashbrown::HashMap;
-use std::fmt::Debug;
+use std::{any::Any, fmt::Debug};
 
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use serde_json::{Map, Value, json};
@@ -18,7 +18,32 @@ pub struct Device {
     pub origin: DeviceOrigin,
     pub entities: Vec<Box<dyn Entity>>,
     pub availability_topic: String,
+    pub metadata: Vec<Box<dyn Metadata>>,
+    pub device_manager_id: String,
     cancellation_token: CancellationToken,
+}
+
+pub trait Metadata: Any + Debug + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T> Metadata for T
+where
+    T: Any + Debug + Send + Sync,
+{
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl PartialEq for Device {
+    fn eq(&self, other: &Self) -> bool {
+        self.details == other.details
+            && self.origin == other.origin
+            && self.availability_topic == other.availability_topic
+            && self.entities.len() == other.entities.len()
+            && self.entities == other.entities
+    }
 }
 
 impl Device {
@@ -26,6 +51,7 @@ impl Device {
         details: DeviceDetails,
         origin: DeviceOrigin,
         availability_topic: String,
+        device_manager_id: String,
         cancellation_token: CancellationToken,
     ) -> Self {
         Self {
@@ -33,6 +59,8 @@ impl Device {
             origin,
             entities: vec![],
             availability_topic,
+            metadata: vec![],
+            device_manager_id,
             cancellation_token,
         }
     }
@@ -42,6 +70,7 @@ impl Device {
         origin: DeviceOrigin,
         availability_topic: String,
         entities: Vec<Box<dyn Entity>>,
+        device_manager_id: String,
         cancellation_token: CancellationToken,
     ) -> Self {
         Self {
@@ -49,8 +78,28 @@ impl Device {
             origin,
             entities,
             availability_topic,
+            metadata: vec![],
+            device_manager_id,
             cancellation_token,
         }
+    }
+
+    pub fn with_metadata(mut self, metadata: Vec<Box<dyn Metadata>>) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    pub fn add_metadata(&mut self, metadata: Box<dyn Metadata>) {
+        self.metadata.push(metadata);
+    }
+
+    pub fn get_metadata<T: Clone + 'static>(&self) -> Vec<T> {
+        self.metadata
+            .iter()
+            .map(|meta| meta.as_ref())
+            .filter_map(|meta| meta.as_any().downcast_ref::<T>())
+            .cloned()
+            .collect::<Vec<_>>()
     }
 
     pub fn command_topics(&self) -> Vec<String> {
@@ -79,6 +128,13 @@ impl Device {
             entities_data.extend(provider_data);
         }
         Ok(entities_data)
+    }
+
+    pub async fn create_discovery_info(&self, discovery_prefix: &str) -> Result<(String, String)> {
+        Ok((
+            self.discovery_topic(discovery_prefix),
+            self.json_for_discovery().await?.to_string(),
+        ))
     }
 
     pub async fn json_for_discovery(&self) -> Result<serde_json::Value> {
@@ -141,7 +197,7 @@ impl Device {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct DeviceDetails {
     pub name: String,
     #[serde(serialize_with = "vec_string_from_string", rename = "identifiers")]
@@ -161,7 +217,7 @@ where
     seq.end()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct DeviceOrigin {
     pub name: String,
     pub sw: String,
@@ -378,6 +434,7 @@ mod tests {
             create_device_details(),
             create_device_origin(),
             "test_device/availability".to_string(),
+            "device_manager_1".to_string(),
             CancellationToken::default(),
         );
 
@@ -387,5 +444,10 @@ mod tests {
         );
         assert_eq!(device.discovery_topic("custom"), "custom/device/test_device/config");
         assert_eq!(device.discovery_topic(""), "/device/test_device/config");
+    }
+    #[test]
+    fn test_metadata() {
+        let device = create_test_device().with_metadata(vec![Box::new("Metadata 1".to_string())]);
+        assert_eq!(vec!["Metadata 1".to_string()], device.get_metadata::<String>());
     }
 }

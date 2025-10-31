@@ -1,15 +1,17 @@
-use hashbrown::HashMap;
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::time::Duration;
+use async_stream::stream;
+use futures::{Stream, StreamExt};
+use hashbrown::{HashMap, HashSet};
+use std::{fmt::Debug, sync::Arc, time::Duration};
 
-use async_trait::async_trait;
-use tokio::sync::{Mutex, RwLock};
-use tokio::time;
+use tokio::{
+    sync::{Mutex, RwLock},
+    time,
+};
 
 use crate::{
     cancellation_token::CancellationToken,
-    devices::{Device, Devices},
+    devices::{Device, DeviceProvider, Devices},
+    helpers::AsyncMap,
 };
 
 #[allow(dead_code)]
@@ -19,6 +21,8 @@ pub enum Error {
     Unknown,
     #[error(transparent)]
     Devices(#[from] crate::devices::Error),
+    #[error(transparent)]
+    Cancellation(#[from] crate::cancellation_token::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -61,127 +65,256 @@ where
     }
 }
 
-#[async_trait]
-pub trait ProducesEvents<TEvent>: std::fmt::Debug + Send + Sync {
-    async fn next_event(&mut self) -> Result<Option<Vec<TEvent>>>;
-}
-
-#[async_trait]
-impl<F, Fut, TEvent> ProducesEvents<TEvent> for UpdateEngine<F, Fut, TEvent>
-where
-    F: FnMut(&CancellationToken) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<Option<Vec<TEvent>>>> + Send,
-{
-    async fn next_event(&mut self) -> Result<Option<Vec<TEvent>>> {
-        self.next_event().await
-    }
-}
-
-#[allow(dead_code)] // todo: use DeviceUpdated variant in docker provider
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug)]
 pub enum UpdateEvent {
     Data(HashMap<String, String>),
-    DeviceUpdated(HashMap<String, String>),
+    #[allow(dead_code)]
+    DevicesUpdated(HashSet<String>), // todo: we are not using this yet, should we remove it?
+    DevicesRemoved(Vec<Arc<RwLock<Device>>>),
+    DevicesCreated(HashSet<String>),
 }
 
 pub struct TimedUpdateEventProvider;
 impl TimedUpdateEventProvider {
-    pub fn create_event_producer(
-        device_arc: Arc<RwLock<Device>>,
+    pub fn create_entity_update_event_producer(
+        devices: &Devices,
         cancellation_token: CancellationToken,
         publish_interval: Duration,
-    ) -> Box<dyn ProducesEvents<UpdateEvent>> {
-        let last_messages_seed = Arc::new(Mutex::new(HashMap::<String, String>::new()));
-        let engine = UpdateEngine::new(cancellation_token, move |cancellation_token| {
-            let cancellation_token_clone = cancellation_token.clone();
-            let last_messages_mutex = last_messages_seed.clone();
-            let device_rwlock = device_arc.clone();
-            async move {
-                trace!(category = "timed_update_event_provider"; "In the main loop for publishing sensor data, now will wait for next interval tick...");
-                let mut interval = time::interval(publish_interval);
-                interval.tick().await; // to set the initial instant
-                if cancellation_token_clone.wait_on(interval.tick()).await.is_err() {
-                    debug!(category = "timed_update_event_provider"; "Cancellation token triggered, stopping periodic sensor data publishing task");
-                    return Ok(None);
+    ) -> impl Stream<Item = Result<Vec<UpdateEvent>>> {
+        let last_messages = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+        stream! {
+            let mut interval = time::interval(publish_interval);
+            interval.tick().await; // to set the initial instant
+            loop {
+                trace!(category = "timed_update_event_provider"; "In the loop for publishing sensor data, now will wait for next interval tick...");
+                if cancellation_token.wait_on(interval.tick()).await.is_err() {
+                    trace!(category = "timed_update_event_provider"; "In the loop for publishing sensor data, cancellation requested, breaking...");
+                    break;
                 }
-                trace!(category = "timed_update_event_provider"; "Interval ticked...");
+                trace!(category = "timed_update_event_provider"; "In the loop for publishing sensor data, interval ticked...");
                 info!(category = "timed_update_event_provider"; "Publishing sensor data...");
-                let mut entities_data = HashMap::<String, String>::new();
-                let data = {
-                    let device = device_rwlock.read().await;
-                    trace!(category = "timed_update_event_provider"; "Getting entities data for device: {}", device.details.name);
-                    let result_data = device.get_entities_data().await;
-                    if let Err(error) = result_data {
-                        error!("Error getting entities data for device {}", device.details.name);
-                        return Err(crate::update_engine::Error::Devices(error));
-                    }
-                    let data = result_data.unwrap();
-                    trace!(category = "timed_update_event_provider"; "Got entities data for device: {}: {data:?}", device.details.name);
-                    data
-                };
-                for entity_data in data.into_iter() {
-                    let mut last_messages = last_messages_mutex.lock().await;
-                    match last_messages.get_mut(&entity_data.0) {
-                        Some(last_payload) => {
-                            if *last_payload == entity_data.1 {
-                                trace!(
-                                    category = "timed_update_event_provider";
-                                    "Entity data for topic {} payload is identical, skipping publish",
-                                    entity_data.0
-                                );
-                            } else {
-                                trace!(
-                                    category = "timed_update_event_provider";
-                                    "Entity data for topic {} payload has changed, will publish",
-                                    entity_data.0
-                                );
-                                entities_data.insert(entity_data.0.clone(), entity_data.1.clone());
-                                *last_payload = entity_data.1;
-                            }
-                        }
-                        _ => {
-                            trace!(
-                                category = "timed_update_event_provider";
-                                "Entity data for topic {} has changed or is new, will publish",
-                                entity_data.0
-                            );
-                            entities_data.insert(entity_data.0.clone(), entity_data.1.clone());
-                            last_messages.insert(entity_data.0, entity_data.1);
-                        }
-                    }
+                match get_events_from_devices(devices, cancellation_token.clone(), last_messages.clone()).await {
+                    Ok(events) => {
+                        trace!(category = "timed_update_event_provider"; "Got sensor data, sending data...");
+                        yield Ok(vec![UpdateEvent::Data(events)]);
+                    },
+                    Err(err) => {
+                        yield Err(err);
+                    },
                 }
-                Ok(Some(vec![UpdateEvent::Data(entities_data)]))
             }
-        });
-        Box::new(engine)
+        }
     }
 
-    pub fn create_event_producers(
-        devices: Devices,
+    pub fn create_devices_created_and_removed_event_producer(
+        device_providers: Arc<Vec<Box<dyn DeviceProvider>>>,
+        devices: &Devices,
+        availability_topic: String,
         cancellation_token: CancellationToken,
         publish_interval: Duration,
-    ) -> Vec<Box<dyn ProducesEvents<UpdateEvent> + 'static>> {
-        let mut event_producers: Vec<Box<dyn ProducesEvents<UpdateEvent>>> = vec![];
-        for device in devices.iter() {
-            event_producers.push(TimedUpdateEventProvider::create_event_producer(
-                device.clone(),
-                cancellation_token.clone(),
-                publish_interval,
-            ));
+    ) -> impl Stream<Item = Result<Vec<UpdateEvent>>> {
+        stream! {
+            let mut interval = time::interval(publish_interval);
+            interval.tick().await; // to set the initial instant
+            loop {
+                trace!(category = "timed_update_event_provider"; "In the loop for publishing new and removed devices, now will wait for next interval tick...");
+                if cancellation_token.wait_on(interval.tick()).await.is_err() {
+                    trace!(category = "timed_update_event_provider"; "In the loop for publishing new and removed devices, cancellation requested, breaking...");
+                    break;
+                }
+                trace!(category = "timed_update_event_provider"; "In the loop for publishing new and removed devices, interval ticked...");
+                match get_new_and_removed_devices_events_from_device_managers(
+                    device_providers.clone(),
+                    devices,
+                    availability_topic.clone(),
+                    cancellation_token.clone(),
+                ).await {
+                    Ok(events) => {
+                        if !events.is_empty() {
+                            info!(category = "timed_update_event_provider"; "Publishing new and removed devices...");
+                            yield Ok(events);
+                        }
+                    },
+                    err => {
+                        error!(category = "timed_update_event_provider"; "Error getting new and removed devices: {:?}", &err);
+                        yield err;
+                    },
+                }
+            }
         }
-        event_producers
     }
+}
+
+async fn get_new_and_removed_devices_events_from_device_managers(
+    device_providers: Arc<Vec<Box<dyn DeviceProvider>>>,
+    devices: &Devices,
+    availability_topic: String,
+    cancellation_token: CancellationToken,
+) -> Result<Vec<UpdateEvent>> {
+    let (added, removed) = device_providers
+        .iter()
+        .async_map(async |device_provider| {
+            Ok((
+                device_provider
+                    .add_discovered_devices(devices, availability_topic.clone(), cancellation_token.clone())
+                    .await?,
+                device_provider
+                    .remove_missing_devices(devices, cancellation_token.clone())
+                    .await?,
+            ))
+        })
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .fold(
+            (HashSet::new(), Vec::new()),
+            |(mut added, mut removed), (mut to_add, to_remove)| {
+                added.extend(to_add.drain());
+                removed.extend(to_remove);
+                (added, removed)
+            },
+        );
+    let mut events = vec![];
+    if !added.is_empty() {
+        events.push(UpdateEvent::DevicesCreated(added));
+    }
+    if !removed.is_empty() {
+        events.push(UpdateEvent::DevicesRemoved(removed));
+    }
+    Ok(events)
+}
+
+async fn get_events_from_devices(
+    devices: &Devices,
+    cancellation_token: CancellationToken,
+    last_messages: Arc<Mutex<HashMap<String, String>>>,
+) -> Result<HashMap<String, String>> {
+    Ok(devices.iter().await.into_iter().async_map(async |device_arc| {
+            info!(category = "timed_update_event_provider"; "Publishing sensor data...");
+            let device = cancellation_token.wait_on(device_arc.read()).await?;
+            trace!(category = "timed_update_event_provider"; "Getting entities data for device: {}", device.details.name);
+            let data = device.get_entities_data().await?;
+            trace!(category = "timed_update_event_provider"; "Got entities data for device: {}: {data:?}", device.details.name);
+            Ok(data)
+        })
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .async_map(async |data| // filter later so that previous errors are not added to last_messages
+                filter_data(data, last_messages.clone(), cancellation_token.clone()).await
+            )
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .reduce(|mut events_acc, events| {
+                events_acc.extend(events);
+                events_acc
+            })
+            .unwrap_or_default())
+}
+
+async fn filter_data(
+    data: HashMap<String, String>,
+    last_messages_mutex: Arc<Mutex<HashMap<String, String>>>,
+    cancellation_token: CancellationToken,
+) -> Result<HashMap<String, String>> {
+    let mut entities_data = HashMap::<String, String>::new();
+    for entity_data in data.into_iter() {
+        let mut last_messages = cancellation_token.wait_on(last_messages_mutex.lock()).await?;
+        match last_messages.get_mut(&entity_data.0) {
+            Some(last_payload) => {
+                if *last_payload == entity_data.1 {
+                    trace!(
+                        category = "timed_update_event_provider";
+                        "Entity data for topic {} payload is identical, skipping publish",
+                        entity_data.0
+                    );
+                } else {
+                    trace!(
+                        category = "timed_update_event_provider";
+                        "Entity data for topic {} payload has changed, will publish",
+                        entity_data.0
+                    );
+                    entities_data.insert(entity_data.0.clone(), entity_data.1.clone());
+                    *last_payload = entity_data.1;
+                }
+            }
+            _ => {
+                trace!(
+                    category = "timed_update_event_provider";
+                    "Entity data for topic {} has changed or is new, will publish",
+                    entity_data.0
+                );
+                entities_data.insert(entity_data.0.clone(), entity_data.1.clone());
+                last_messages.insert(entity_data.0, entity_data.1);
+            }
+        }
+    }
+    Ok(entities_data)
+}
+
+pub async fn create_event_producers(
+    devices: &Devices,
+    device_providers: Arc<Vec<Box<dyn DeviceProvider>>>,
+    availability_topic: String,
+    cancellation_token: CancellationToken,
+    publish_interval: Duration,
+) -> impl Stream<Item = Result<Vec<UpdateEvent>>> {
+    futures::stream::select_all([
+        TimedUpdateEventProvider::create_devices_created_and_removed_event_producer(
+            device_providers.clone(),
+            devices,
+            availability_topic.clone(),
+            cancellation_token.clone(),
+            publish_interval,
+        )
+        .boxed(),
+        TimedUpdateEventProvider::create_entity_update_event_producer(devices, cancellation_token, publish_interval)
+            .boxed(),
+    ])
 }
 
 #[cfg(test)]
 mod tests {
+    use futures::StreamExt;
     use serial_test::serial;
-    use std::sync::Arc;
+    use std::{pin::pin, sync::Arc};
     use tokio::sync::Mutex;
 
     use super::*;
     use crate::{cancellation_token::CancellationTokenSource, devices::test_module::test_helpers::*};
     use pretty_assertions::assert_eq;
+
+    impl PartialEq for UpdateEvent {
+        fn eq(&self, other: &Self) -> bool {
+            match (self, other) {
+                (UpdateEvent::Data(a), UpdateEvent::Data(b)) => a == b,
+                (UpdateEvent::DevicesUpdated(a), UpdateEvent::DevicesUpdated(b)) => a == b,
+                (UpdateEvent::DevicesRemoved(a), UpdateEvent::DevicesRemoved(b)) => {
+                    let a_ids: HashSet<String> = a
+                        .iter()
+                        .map(|device_lock| {
+                            let device = futures::executor::block_on(device_lock.read());
+                            device.details.identifier.clone()
+                        })
+                        .collect();
+                    let b_ids: HashSet<String> = b
+                        .iter()
+                        .map(|device_lock| {
+                            let device = futures::executor::block_on(device_lock.read());
+                            device.details.identifier.clone()
+                        })
+                        .collect();
+                    a_ids == b_ids
+                }
+                (UpdateEvent::DevicesCreated(a), UpdateEvent::DevicesCreated(b)) => a == b,
+                _ => false,
+            }
+        }
+    }
 
     #[tokio::test]
     async fn single_event() {
@@ -191,10 +324,10 @@ mod tests {
             )]))
         });
 
-        let events = engine.next_event().await.unwrap();
+        let events = engine.next_event().await.unwrap().unwrap();
         assert_eq!(
             events,
-            Some(vec![UpdateEvent::Data(hashmap! {"x".to_string() => "y".to_string()})])
+            vec![UpdateEvent::Data(hashmap! {"x".to_string() => "y".to_string()})]
         );
     }
 
@@ -303,19 +436,21 @@ mod tests {
     async fn test_publish_sensor_data_for_all_devices_skips_unchanged_data() {
         let mut device = make_empty_device();
         device.entities.push(Box::new(get_mock_entity()));
-        let mut event_producer = TimedUpdateEventProvider::create_event_producer(
-            Arc::new(RwLock::new(device)),
+        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+        let event_producer = TimedUpdateEventProvider::create_entity_update_event_producer(
+            &devices,
             CancellationToken::default(),
             Duration::from_millis(1),
         );
-        let first_event = event_producer.next_event().await.unwrap().unwrap(); // First call to populate last_messages
+        let mut event_producer = pin!(event_producer);
+        let first_event = event_producer.next().await.unwrap().unwrap(); // First call to populate last_messages
         assert_eq!(
             vec![UpdateEvent::Data(hashmap! {
                 "dev1/test_name/state".to_string() => "test_state".to_string()
             })],
             first_event
         );
-        let second_event = event_producer.next_event().await.unwrap(); // Second call should skip unchanged data
-        assert_eq!(Some(vec![UpdateEvent::Data(hashmap! {})]), second_event);
+        let second_event = event_producer.next().await.unwrap().unwrap(); // Second call should skip unchanged data
+        assert_eq!(vec![UpdateEvent::Data(hashmap! {})], second_event);
     }
 }

@@ -1,9 +1,10 @@
 pub use crate::devices::{device::*, devices::Devices, light::Light, sensor::Sensor, switch::Switch, text::Text};
 use crate::{cancellation_token::CancellationToken, device_manager::CommandResult, helpers::*};
 use async_trait::async_trait;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use serde_json::{Value, json};
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc};
+use tokio::sync::RwLock;
 
 mod device;
 #[allow(clippy::module_inception)]
@@ -21,12 +22,26 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error(transparent)]
+    Cancelled(#[from] crate::cancellation_token::Error),
     #[error("Device provider error: {0}")]
     DeviceProvider(String),
     #[error("Incorrect JSON structure")]
     IncorrectJsonStructure,
     #[error("Unknown error")]
     Unknown,
+}
+
+impl PartialEq<dyn Entity> for Box<dyn Entity + '_> {
+    fn eq(&self, other: &dyn Entity) -> bool {
+        self.get_data().details() == other.get_data().details()
+    }
+}
+
+impl PartialEq for dyn Entity + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.get_data().details() == other.get_data().details()
+    }
 }
 
 #[async_trait]
@@ -97,7 +112,7 @@ mockall::mock! {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct EntityDetails {
     pub device_identifier: String,
     pub id: String,
@@ -179,8 +194,23 @@ pub trait EntityDetailsGetter {
 
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
-pub trait DeviceProvider {
+pub trait DeviceProvider: Send + Sync {
+    fn id(&self) -> String;
     async fn get_devices(&self, availability_topic: String, cancellation_token: CancellationToken) -> Result<Devices>;
+    // Removes the devices that are no longer present on the physical device. Returns the identifiers of the removed devices.
+    async fn remove_missing_devices(
+        &self,
+        devices: &Devices,
+        cancellation_token: CancellationToken,
+    ) -> Result<Vec<Arc<RwLock<Device>>>>;
+    // Adds new devices that are present on the physical device but not in the provided Devices collection. Returns the
+    // identifiers of the added devices.
+    async fn add_discovered_devices(
+        &self,
+        devices: &Devices,
+        availability_topic: String,
+        cancellation_token: CancellationToken,
+    ) -> Result<HashSet<String>>;
 }
 
 #[cfg(test)]

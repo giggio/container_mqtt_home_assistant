@@ -1,5 +1,7 @@
 #[macro_use]
 extern crate log;
+use std::sync::Arc;
+
 use clap::Parser;
 extern crate docker_status_mqtt_proc_macros;
 #[macro_use]
@@ -52,6 +54,7 @@ async fn run(cli: Cli) -> Result<()> {
                 trace!("Adding Docker device provider with name: {device_name}");
                 device_providers.push(Box::new(DockerDeviceProvider::new(device_name)?));
             }
+            let device_providers_arc = Arc::new(device_providers);
             let mut cancellation_token_source = CancellationTokenSource::new();
             deal_with_ctrl_c(cancellation_token_source.clone());
             let (mut device_manager, eventloop, rx) = DeviceManager::new(
@@ -65,12 +68,12 @@ async fn run(cli: Cli) -> Result<()> {
                 cancellation_token_source.create_token().await,
             )?;
             let devices = Devices::from_device_providers(
-                device_providers,
+                device_providers_arc.clone(),
                 device_manager.availability_topic(),
                 cancellation_token_source.create_token().await,
             )
             .await?;
-            device_manager.publish_sensor_data_periodically(rx, devices)?;
+            device_manager.publish_sensor_data_periodically(rx, devices, device_providers_arc)?;
             info!("Configured, initiating connection and message exchange...");
             device_manager.deal_with_event_loop(eventloop).await?;
         }

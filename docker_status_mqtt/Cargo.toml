@@ -29,6 +29,7 @@ const_format = { version = "0.2.35", features = ["rust_1_83", "fmt"] }
 hashbrown = "0.16.0"
 foldhash = "0.2.0"
 rustix = { version = "1.1.2", features = ["system"] }
+async-stream = "0.3.6"
 
 [dev-dependencies]
 ctor = "0.6.0"

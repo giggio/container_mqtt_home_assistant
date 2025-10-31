@@ -1,4 +1,4 @@
-use hashbrown::HashMap;
+use std::sync::Arc;
 
 use crate::{
     cancellation_token::CancellationToken,
@@ -12,8 +12,10 @@ use crate::{
 
 use async_trait::async_trait;
 use chrono::Utc;
+use hashbrown::{HashMap, HashSet};
 use rand::Rng;
 use serde_json::json;
+use tokio::sync::RwLock;
 
 pub struct SampleDeviceProvider {
     device_id: String,
@@ -47,6 +49,9 @@ impl SampleDeviceProvider {
 
 #[async_trait]
 impl DeviceProvider for SampleDeviceProvider {
+    fn id(&self) -> String {
+        "sample_device_provider".to_string()
+    }
     async fn get_devices(&self, availability_topic: String, cancellation_token: CancellationToken) -> Result<Devices> {
         let mut main_device = Device::new(
             DeviceDetails {
@@ -62,6 +67,7 @@ impl DeviceProvider for SampleDeviceProvider {
                 url: "https://github.com/giggio/docker-status-mqtt".to_string(),
             },
             availability_topic.clone(),
+            self.id(),
             CancellationToken::default(),
         );
         let memory_sensor = Box::new(MemorySensor {
@@ -141,6 +147,7 @@ impl DeviceProvider for SampleDeviceProvider {
                 url: "https://github.com/giggio/docker-status-mqtt".to_string(),
             },
             availability_topic,
+            self.id(),
             CancellationToken::default(),
         );
 
@@ -157,6 +164,23 @@ impl DeviceProvider for SampleDeviceProvider {
             vec![main_device, dependent_device],
             cancellation_token,
         ))
+    }
+
+    async fn remove_missing_devices(
+        &self,
+        _devices: &Devices,
+        _cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<Vec<Arc<RwLock<Device>>>> {
+        Ok(vec![])
+    }
+
+    async fn add_discovered_devices(
+        &self,
+        _devices: &Devices,
+        _availability_topic: String,
+        _cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<HashSet<String>> {
+        Ok(HashSet::new())
     }
 }
 
@@ -380,6 +404,7 @@ mod tests {
                 url: "http://example.com".to_string(),
             },
             "dev1/availability_topic".to_string(),
+            "sample_device_manager_id".to_string(),
             CancellationToken::default(),
         )
     }
@@ -520,7 +545,7 @@ mod tests {
             .get_devices("node_id/availability".to_string(), CancellationToken::default())
             .await
             .unwrap();
-        assert_eq!(devices.len(), 2);
+        assert_eq!(devices.len().await, 2);
         let mut devices_vec = devices.into_vec().await.unwrap();
         devices_vec.sort_by_key(|d| d.details.identifier.clone());
         let device = devices_vec.last().unwrap();

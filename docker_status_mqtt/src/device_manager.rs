@@ -1,4 +1,5 @@
 use chrono::Utc;
+use futures::StreamExt;
 use hashbrown::HashMap;
 use rumqttc::{
     Transport,
@@ -19,16 +20,16 @@ use std::{
 };
 use tokio::{
     sync::watch::{Receiver, Sender},
-    task::{JoinHandle, JoinSet},
+    task::JoinHandle,
     time::{self, timeout},
 };
 use tokio_rustls::rustls::ClientConfig;
 
 use crate::{
     cancellation_token::{CancellationToken, CancellationTokenSource},
-    devices::Devices,
-    helpers::pretty_format,
-    update_engine::{TimedUpdateEventProvider, UpdateEvent},
+    devices::{DeviceProvider, Devices},
+    helpers::{AsyncMap, pretty_format},
+    update_engine::{UpdateEvent, create_event_producers},
 };
 
 const DURATION_KEEPALIVE: Duration = Duration::from_secs(45);
@@ -196,15 +197,13 @@ impl DeviceManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    async fn remove_entities(&self, devices: Devices) -> Result<()> {
-        trace!("Removing all devices and entities from Home Assistant...");
-        self.make_unavailable().await?;
+    async fn publish_removed_entities_discovery(&self, devices: Devices) -> Result<()> {
+        trace!("Removing devices and entities from Home Assistant...");
         for discovery_topic in devices.discovery_topics(&self.discovery_prefix).await.into_iter() {
-            trace!("Removing device entities for topic: {}", &discovery_topic);
+            trace!("Removing device for topic: {}", &discovery_topic);
             self.publish_to_client(discovery_topic, "".to_string()).await?;
         }
-        info!("Removed all devices and entities from Home Assistant");
+        info!("Removed devices and entities from Home Assistant");
         Ok(())
     }
 
@@ -297,7 +296,10 @@ impl DeviceManager {
 
     async fn set_availability(&self, available: bool) -> Result<()> {
         let availability_text = if available { "online" } else { "offline" }.to_string();
-        trace!("Publishing availability as {availability_text} for all devices...");
+        trace!(
+            "Publishing availability in topic {} as {availability_text} for all devices...",
+            self.availability_topic
+        );
         if self.is_connected() == Some(true) {
             info!("Publishing availability as {availability_text}...");
             self.publish_to_client(self.availability_topic.clone(), availability_text)
@@ -555,11 +557,19 @@ impl DeviceManager {
         Ok(())
     }
 
-    pub fn publish_sensor_data_periodically(&self, rx: Receiver<ChannelMessages>, devices: Devices) -> Result<()> {
+    pub fn publish_sensor_data_periodically(
+        &self,
+        rx: Receiver<ChannelMessages>,
+        devices: Devices,
+        device_providers: Arc<Vec<Box<dyn DeviceProvider>>>,
+    ) -> Result<()> {
         trace!("Starting periodic sensor data publishing task...");
         let other_mqtt_device = self.clone();
         tokio::spawn(async move {
-            match other_mqtt_device.maintain_message_traffic(rx, devices.clone()).await {
+            match other_mqtt_device
+                .maintain_message_traffic(rx, devices, device_providers)
+                .await
+            {
                 Ok(_) => trace!("Periodic sensor data publishing task exited normally"),
                 Err(e) => error!("Error in periodic sensor data publishing task: {e}"),
             }
@@ -568,7 +578,12 @@ impl DeviceManager {
     }
 
     /// this runs in a separate thread, handling messages from the channel
-    pub async fn maintain_message_traffic(self, mut rx: Receiver<ChannelMessages>, devices: Devices) -> Result<()> {
+    pub async fn maintain_message_traffic(
+        self,
+        mut rx: Receiver<ChannelMessages>,
+        devices: Devices,
+        device_providers: Arc<Vec<Box<dyn DeviceProvider>>>,
+    ) -> Result<()> {
         let mut connection_manager = ConnectionManager::new(devices.clone());
         loop {
             trace!(category = "[message_traffic]"; "Before waiting for next message...");
@@ -576,7 +591,11 @@ impl DeviceManager {
                 Err(_) => {
                     trace!(category = "[message_traffic]"; "Cancellation requested, stopping connection manager and update publishing loop...");
                     connection_manager
-                        .deal_with_connection_status_change_and_manage_periodic_publishing(&self, false)
+                        .deal_with_connection_status_change_and_manage_periodic_publishing(
+                            &self,
+                            device_providers.clone(),
+                            false,
+                        )
                         .await?;
                     continue;
                 }
@@ -593,7 +612,11 @@ impl DeviceManager {
             match message {
                 ChannelMessages::Connected(is_connected_message) => {
                     connection_manager
-                        .deal_with_connection_status_change_and_manage_periodic_publishing(&self, is_connected_message)
+                        .deal_with_connection_status_change_and_manage_periodic_publishing(
+                            &self,
+                            device_providers.clone(),
+                            is_connected_message,
+                        )
                         .await?
                 }
                 ChannelMessages::Message(publish_result) => {
@@ -602,7 +625,11 @@ impl DeviceManager {
                 ChannelMessages::Stopping => {
                     trace!(category = "[message_traffic]"; "Received stop message, will stop state publishing...");
                     connection_manager
-                        .deal_with_connection_status_change_and_manage_periodic_publishing(&self, false)
+                        .deal_with_connection_status_change_and_manage_periodic_publishing(
+                            &self,
+                            device_providers.clone(),
+                            false,
+                        )
                         .await?;
                     trace!(category = "[message_traffic]"; "Processing stop message, will make devices unavailable...");
                     self.make_unavailable().await?;
@@ -683,6 +710,7 @@ impl ConnectionManager {
     pub async fn deal_with_connection_status_change_and_manage_periodic_publishing(
         &mut self,
         device_manager: &DeviceManager,
+        device_providers: Arc<Vec<Box<dyn DeviceProvider>>>,
         is_connected_message: bool,
     ) -> Result<()> {
         trace!(
@@ -732,10 +760,15 @@ impl ConnectionManager {
             let cancellation_token = cancellation_token_source.create_token().await;
             self.cancellation_token_source = Some(cancellation_token_source);
             let other_mqtt_device = device_manager.clone();
+            let other_device_provider = device_providers.clone();
             self.join_handle = Some(tokio::spawn(async move {
-                let _publish_sensor_data_result =
-                    Self::publish_sensor_data_in_a_loop(other_mqtt_device, devices_clone.clone(), cancellation_token)
-                        .await; // todo: handle result
+                let _publish_sensor_data_result = Self::publish_sensor_data_in_a_loop(
+                    other_mqtt_device,
+                    other_device_provider,
+                    devices_clone.clone(),
+                    cancellation_token,
+                )
+                .await; // todo: handle result
             }));
         } else {
             trace!("Channel received Disconnected message");
@@ -746,57 +779,79 @@ impl ConnectionManager {
     /// This runs in a separate thread, publishing sensor data periodically until cancellation is requested.
     pub async fn publish_sensor_data_in_a_loop(
         device_manager: DeviceManager,
+        device_providers: Arc<Vec<Box<dyn DeviceProvider>>>,
         devices: Devices,
         cancellation_token: CancellationToken,
     ) -> Result<()> {
-        let event_producers = TimedUpdateEventProvider::create_event_producers(
-            devices,
-            cancellation_token,
+        let mut event_producers = create_event_producers(
+            &devices,
+            device_providers,
+            device_manager.availability_topic(),
+            cancellation_token.clone(),
             device_manager.publish_interval, // todo: take as param?
-        );
-        let mut join_set: JoinSet<Result<()>> = JoinSet::new();
-        for mut event_producer in event_producers.into_iter() {
-            join_set.spawn({
-                let device_manager_clone = device_manager.clone();
-                async move {
-                    loop {
-                        match event_producer.next_event().await {
-                            Err(err) => {
-                                error!(category = "publish_sensor_data_in_a_loop"; "Error getting next event from update engine: {err}");
-                            }
-                            Ok(Some(entities_data)) => {
-                                for entity_data in entities_data {
-                                    match entity_data {
-                                        UpdateEvent::Data(data) => {
-                                            trace!("Publishing sensor data to Home Assistant...");
-                                            if let Err(err) = device_manager_clone.publish_sensor_data(data).await {
-                                                error!(category = "publish_sensor_data_in_a_loop"; "Error publishing sensor data: {err}");
-                                            } else {
-                                                trace!("Published all sensor data to Home Assistant");
-                                            }
-                                        }
-                                        UpdateEvent::DeviceUpdated(_) => {
-                                            trace!("Device updated, not handled yet..."); // todo: handle device update
-                                        }
-                                    }
+        )
+        .await;
+        while let Some(event_producer) = event_producers.next().await {
+            match event_producer {
+                Err(crate::update_engine::Error::Cancellation(_)) => {
+                    trace!("Done publishing sensor data loop, exiting...");
+                    break;
+                }
+                Err(err) => {
+                    error!(category = "publish_sensor_data_in_a_loop"; "Error getting next event from update engine: {err}");
+                }
+                Ok(entities_data) => {
+                    for entity_data in entities_data {
+                        match entity_data {
+                            UpdateEvent::Data(data) => {
+                                trace!("Publishing sensor data to Home Assistant...");
+                                if let Err(err) = device_manager.publish_sensor_data(data).await {
+                                    error!(category = "publish_sensor_data_in_a_loop"; "Error publishing sensor data: {err}");
+                                } else {
+                                    trace!("Published all sensor data to Home Assistant");
                                 }
                             }
-                            Ok(None) => {
-                                trace!("Done publishing sensor data loop, exiting...");
-                                break;
+                            UpdateEvent::DevicesUpdated(ids) => {
+                                trace!("Publishing updated device entities to Home Assistant...");
+                                device_manager
+                                    .publish_entities_discovery(devices.filter(ids).await)
+                                    .await?
+                            }
+                            UpdateEvent::DevicesRemoved(devices_vec) => {
+                                if devices_vec.is_empty() {
+                                    warn!("No devices to remove, skipping...");
+                                    continue;
+                                }
+                                if log_enabled!(log::Level::Trace) {
+                                    let ids_list = devices_vec
+                                        .iter()
+                                        .async_map(async |device_lock| {
+                                            let d = device_lock.read().await;
+                                            d.details.identifier.clone()
+                                        })
+                                        .await
+                                        .join(", ");
+                                    trace!("Removing device entities from Home Assistant, ids: {ids_list}...");
+                                }
+                                device_manager
+                                    .publish_removed_entities_discovery(
+                                        Devices::new_from_many_shared_devices(devices_vec, cancellation_token.clone())
+                                            .await,
+                                    )
+                                    .await?
+                            }
+                            UpdateEvent::DevicesCreated(new_device_ids) => {
+                                trace!("Publishing new device entities to Home Assistant...");
+                                let new_devices = devices.filter(new_device_ids).await;
+                                device_manager.publish_entities_discovery(new_devices.clone()).await?;
+                                time::sleep(Duration::from_secs(1)).await;
+                                device_manager.subscribe_to_commands(new_devices).await?;
+                                device_manager.make_available().await?
                             }
                         }
                     }
-                Ok(())
                 }
-            });
-        }
-        let results = join_set.join_all().await;
-        if !results.into_iter().all(|r| r.is_ok()) {
-            error!(category = "publish_sensor_data_in_a_loop"; "One or more tasks in periodic sensor data publishing failed.");
-            return Err(Error::PublishSensorLoop);
-        } else {
-            trace!("All tasks in periodic sensor data publishing completed successfully.");
+            }
         }
         Ok(())
     }
@@ -1251,16 +1306,6 @@ mod tests {
             mock_client
                 .expect_publish()
                 .with(
-                    predicate::eq("node1/availability".to_string()),
-                    predicate::eq(QoS::AtLeastOnce),
-                    predicate::eq(false),
-                    predicate::eq("offline".to_string()),
-                )
-                .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
-                .times(1);
-            mock_client
-                .expect_publish()
-                .with(
                     predicate::eq("homeassistant/device/test_device/config".to_string()),
                     predicate::eq(QoS::AtLeastOnce),
                     predicate::eq(false),
@@ -1271,7 +1316,10 @@ mod tests {
         });
         let manager = make_device_manager();
         manager.set_connected(true);
-        manager.remove_entities(make_empty_devices()).await.unwrap();
+        manager
+            .publish_removed_entities_discovery(make_empty_devices())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

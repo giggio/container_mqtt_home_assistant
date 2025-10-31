@@ -2,6 +2,29 @@ use std::time::Duration;
 
 use chrono_humanize::{Accuracy, HumanTime, Tense};
 
+pub trait AsyncMap {
+    async fn async_map<F, Fut, T, U>(self, f: F) -> Vec<U>
+    where
+        F: Fn(T) -> Fut,
+        Fut: std::future::Future<Output = U>,
+        Self: Sized + IntoIterator<Item = T>,
+    {
+        futures::future::join_all(self.into_iter().map(f)).await
+    }
+
+    #[allow(dead_code)] // todo: use this somewhere or remove it
+    async fn async_foreach<F, Fut, T, U>(self, f: F)
+    where
+        F: Fn(T) -> Fut,
+        Fut: std::future::Future<Output = U>,
+        Self: Sized + IntoIterator<Item = T>,
+    {
+        futures::future::join_all(self.into_iter().map(f)).await;
+    }
+}
+
+impl<T, I> AsyncMap for I where I: IntoIterator<Item = T> {}
+
 pub fn slugify(name: impl Into<String>) -> String {
     guls::slugify(name.into()).replace('-', "_")
 }

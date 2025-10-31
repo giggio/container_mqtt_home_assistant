@@ -35,6 +35,7 @@ pub mod test_helpers {
             create_device_details(),
             create_device_origin(),
             "dev1/availability".to_string(),
+            "device_manager_1".to_string(),
             CancellationToken::default(),
         )
     }
@@ -50,6 +51,7 @@ pub mod test_helpers {
             },
             create_device_origin(),
             "dev1/availability".to_string(),
+            "device_manager_1".to_string(),
             CancellationToken::default(),
         )
     }
@@ -94,6 +96,7 @@ pub mod test_helpers {
                 url: "http://example".to_string(),
             },
             "dev1/availability".to_string(),
+            "device_manager_1".to_string(),
             CancellationToken::default(),
         )
     }

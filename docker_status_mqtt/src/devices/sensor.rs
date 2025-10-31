@@ -26,17 +26,13 @@ impl Sensor {
         device_class: impl Into<String>,
     ) -> Self {
         Self::new_with_details(
-            EntityDetails::new(device_identifier.into(), name.into(), icon.into()),
+            EntityDetails::new(device_identifier, name, icon),
             Some(unit_of_measurement.into()),
             Some(device_class.into()),
         )
     }
     pub fn new_simple(device_identifier: impl Into<String>, name: impl Into<String>, icon: impl Into<String>) -> Self {
         Self::new_with_details(EntityDetails::new(device_identifier, name, icon), None, None)
-    }
-    #[allow(dead_code)]
-    pub fn new_simple_with_details(details: EntityDetails) -> Self {
-        Sensor::new_with_details(details, None, None)
     }
     pub fn new_with_details(
         details: EntityDetails,

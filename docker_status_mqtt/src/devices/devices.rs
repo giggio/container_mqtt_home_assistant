@@ -2,26 +2,49 @@ use crate::{
     cancellation_token::CancellationToken,
     device_manager::PublishResult,
     devices::{DeviceProvider, Result, device::Device},
+    helpers::*,
 };
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use std::{fmt::Debug, sync::Arc};
 use tokio::sync::RwLock;
 
 #[derive(Clone, Debug)]
 pub struct Devices {
-    devices: Arc<HashMap<String, Arc<RwLock<Device>>>>,
+    devices: Arc<RwLock<HashMap<String, Arc<RwLock<Device>>>>>,
     #[allow(dead_code)] // todo: use cancellation_token somewhere or remove it?
     cancellation_token: CancellationToken,
 }
 
 impl Devices {
     pub fn new_from_many_devices(devices: Vec<Device>, cancellation_token: CancellationToken) -> Self {
-        let devices = Arc::new(HashMap::<_, _>::from_iter(
+        let devices = Arc::new(RwLock::new(HashMap::<_, _>::from_iter(
             devices
                 .into_iter()
                 .map(|d| (d.details.identifier.clone(), Arc::new(RwLock::new(d)))),
-        ));
-        Devices {
+        )));
+        Self {
+            devices,
+            cancellation_token,
+        }
+    }
+
+    pub async fn new_from_many_shared_devices(
+        devices: Vec<Arc<RwLock<Device>>>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
+        let devices = Arc::new(RwLock::new(HashMap::<_, _>::from_iter(
+            devices
+                .into_iter()
+                .async_map(async |device_lock| {
+                    let id = {
+                        let device = device_lock.read().await;
+                        device.details.identifier.clone()
+                    };
+                    (id, device_lock)
+                })
+                .await,
+        )));
+        Self {
             devices,
             cancellation_token,
         }
@@ -29,36 +52,38 @@ impl Devices {
 
     #[cfg(test)]
     pub fn new_from_single_device(device: Device, cancellation_token: CancellationToken) -> Self {
-        Devices {
-            devices: Arc::new(hashmap! {device.details.identifier.clone() => Arc::new(RwLock::new(device))}),
+        Self {
+            devices: Arc::new(RwLock::new(
+                hashmap! {device.details.identifier.clone() => Arc::new(RwLock::new(device))},
+            )),
             cancellation_token,
         }
     }
 
     pub async fn from_device_providers(
-        providers: Vec<Box<dyn DeviceProvider>>,
+        providers: Arc<Vec<Box<dyn DeviceProvider>>>,
         availability_topic: String,
         cancellation_token: CancellationToken,
     ) -> Result<Self> {
         let mut all_devices = HashMap::new();
-        for provider in providers {
+        for provider in providers.iter() {
             let Devices { mut devices, .. } = provider
                 .get_devices(availability_topic.clone(), CancellationToken::default())
                 .await?;
-            all_devices.extend(Arc::get_mut(&mut devices).unwrap().drain());
+            all_devices.extend(Arc::get_mut(&mut devices).unwrap().write().await.drain());
         }
         Ok(Devices {
-            devices: Arc::new(all_devices),
+            devices: Arc::new(RwLock::new(all_devices)),
             cancellation_token,
         })
     }
 
-    pub fn iter(&self) -> hashbrown::hash_map::Values<'_, String, Arc<RwLock<Device>>> {
-        self.devices.values()
+    pub async fn iter(&self) -> Vec<Arc<RwLock<Device>>> {
+        self.devices.read().await.values().cloned().collect()
     }
 
     pub fn into_iter(self) -> Option<hashbrown::hash_map::IntoValues<String, Arc<RwLock<Device>>>> {
-        Arc::<_>::into_inner(self.devices).map(|devices| devices.into_values())
+        Arc::<_>::into_inner(self.devices).map(|rwlock| rwlock.into_inner().into_values())
     }
 
     #[allow(dead_code)] // used in tests and possibly useful elsewhere
@@ -80,19 +105,19 @@ impl Devices {
     }
 
     pub async fn create_discovery_info(&self, discovery_prefix: &str) -> Result<HashMap<String, String>> {
-        let mut map = HashMap::new();
-        for device_lock in self.iter() {
-            let device = device_lock.read().await;
-            let discovery_json = device.json_for_discovery().await?.to_string();
-            let discovery_topic = device.discovery_topic(discovery_prefix);
-            map.insert(discovery_topic, discovery_json);
-        }
-        Ok(map)
+        self.iter()
+            .await
+            .async_map(
+                |device_lock| async move { device_lock.read().await.create_discovery_info(discovery_prefix).await },
+            )
+            .await
+            .into_iter()
+            .collect::<Result<HashMap<_, _>>>()
     }
 
     pub async fn discovery_topics(&self, discovery_prefix: &str) -> Vec<String> {
         let mut topics = Vec::new();
-        for device_lock in self.iter() {
+        for device_lock in self.iter().await {
             let device = device_lock.read().await;
             topics.push(device.discovery_topic(discovery_prefix));
         }
@@ -101,7 +126,7 @@ impl Devices {
 
     pub async fn command_topics(&self) -> Vec<String> {
         let mut topics = Vec::new();
-        for device_lock in self.iter() {
+        for device_lock in self.iter().await {
             let device = device_lock.read().await;
             topics.extend(device.command_topics());
         }
@@ -110,7 +135,7 @@ impl Devices {
 
     pub async fn get_entities_data(&self) -> Result<HashMap<String, String>> {
         let mut entities_data = HashMap::<String, String>::new();
-        for device_lock in self.iter() {
+        for device_lock in self.iter().await {
             let device = device_lock.read().await;
             trace!("Getting entities data for device: {}", device.details.name);
             let data = device.get_entities_data().await?;
@@ -125,7 +150,7 @@ impl Devices {
     pub async fn handle_command(&self, publish_result: &PublishResult) -> Result<HashMap<String, String>> {
         let mut state_updates = HashMap::new();
         let mut handled = false;
-        for device_lock in self.iter() {
+        for device_lock in self.iter().await {
             let (command_handle_result, device_name) = {
                 let mut device = device_lock.write().await;
                 trace!("Checking if device {} can handle command...", device.details.name);
@@ -166,7 +191,48 @@ impl Devices {
     }
 
     #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.devices.len()
+    pub async fn len(&self) -> usize {
+        self.devices.read().await.len()
+    }
+
+    #[allow(dead_code)] // todo: keep? possibly useful
+    pub async fn get(&self, identifier: &str) -> Option<Arc<RwLock<Device>>> {
+        self.devices.read().await.get(identifier).cloned()
+    }
+
+    pub async fn filter(&self, identifiers: HashSet<String>) -> Devices {
+        let filtered_devices = self
+            .devices
+            .read()
+            .await
+            .iter()
+            .filter(|(id, _)| identifiers.contains(*id))
+            .map(|(id, device)| (id.clone(), device.clone()))
+            .collect::<HashMap<_, _>>();
+        Devices {
+            devices: Arc::new(RwLock::new(filtered_devices)),
+            cancellation_token: self.cancellation_token.clone(),
+        }
+    }
+
+    pub async fn identifiers(&self) -> HashSet<String> {
+        self.devices.read().await.keys().cloned().collect()
+    }
+
+    pub async fn add_devices(&self, new_devices: Vec<Device>) -> Result<()> {
+        self.cancellation_token.wait_on(self.devices.write()).await?.extend(
+            new_devices
+                .into_iter()
+                .map(|d| (d.details.identifier.clone(), Arc::new(RwLock::new(d)))),
+        );
+        Ok(())
+    }
+
+    pub async fn remove_devices(&self, identifiers: &HashSet<String>) -> Result<Vec<Arc<RwLock<Device>>>> {
+        let mut devices = self.cancellation_token.wait_on(self.devices.write()).await?;
+        Ok(identifiers
+            .iter()
+            .filter_map(|identifier| devices.remove(identifier))
+            .collect::<Vec<_>>())
     }
 }
