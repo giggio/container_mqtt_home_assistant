@@ -1,4 +1,12 @@
-pub use crate::devices::{device::*, devices::Devices, light::Light, sensor::Sensor, switch::Switch, text::Text};
+pub use crate::devices::{
+    button::{Button, ButtonDeviceClass},
+    device::*,
+    devices::Devices,
+    light::Light,
+    sensor::Sensor,
+    switch::Switch,
+    text::Text,
+};
 use crate::{cancellation_token::CancellationToken, device_manager::CommandResult, helpers::*};
 use async_trait::async_trait;
 use hashbrown::{HashMap, HashSet};
@@ -6,6 +14,7 @@ use serde_json::{Value, json};
 use std::{fmt::Debug, sync::Arc};
 use tokio::sync::RwLock;
 
+mod button;
 mod device;
 #[allow(clippy::module_inception)]
 mod devices;
@@ -47,7 +56,9 @@ impl PartialEq for dyn Entity + '_ {
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait Entity: Send + Sync + Debug {
-    async fn get_entity_data(&self, cancellation_token: CancellationToken) -> Result<HashMap<String, String>>;
+    async fn get_entity_data(&self, _cancellation_token: CancellationToken) -> Result<HashMap<String, String>> {
+        Ok(HashMap::new())
+    }
     fn get_data(&self) -> &dyn EntityType;
     #[allow(unused_variables)]
     async fn do_handle_command(
@@ -117,7 +128,7 @@ pub struct EntityDetails {
     pub device_identifier: String,
     pub id: String,
     pub name: String,
-    pub icon: String,
+    pub icon: Option<String>,
     pub has_attributes: bool,
     pub command_topics: Vec<String>,
 }
@@ -125,14 +136,31 @@ pub struct EntityDetails {
 impl EntityDetails {
     pub fn new(device_identifier: impl Into<String>, name: impl Into<String>, icon: impl Into<String>) -> Self {
         let name = name.into();
-        EntityDetails {
+        Self {
             device_identifier: device_identifier.into(),
             id: slugify(&name),
             name,
-            icon: icon.into(),
+            icon: Some(icon.into()),
             has_attributes: false,
             command_topics: Vec::new(),
         }
+    }
+
+    pub fn new_without_icon(device_identifier: impl Into<String>, name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            device_identifier: device_identifier.into(),
+            id: slugify(&name),
+            name,
+            icon: None,
+            has_attributes: false,
+            command_topics: Vec::new(),
+        }
+    }
+
+    pub fn set_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
     }
 
     pub fn has_attributes(mut self) -> Self {
@@ -169,10 +197,12 @@ impl EntityDetails {
             "name": self.name,
             "unique_id": format!("{}_{}", device.details.identifier, self.id),
             "state_topic": self.get_topic_for_state(None),
-            "icon": self.icon,
         });
-        Ok(if self.has_attributes {
-            let mut json_map = cast!(json, Value::Object);
+        let mut json_map = cast!(json, Value::Object);
+        if let Some(icon) = &self.icon {
+            json_map.insert("icon".to_owned(), Value::String(icon.clone()));
+        }
+        if self.has_attributes {
             json_map.insert(
                 "json_attributes_topic".to_owned(),
                 Value::String(self.get_topic_for_state(Some("attributes"))),
@@ -181,10 +211,8 @@ impl EntityDetails {
                 "json_attributes_template".to_owned(),
                 Value::String("{{ value_json | tojson }}".to_string()),
             );
-            Value::Object(json_map)
-        } else {
-            json
-        })
+        }
+        Ok(Value::Object(json_map))
     }
 }
 

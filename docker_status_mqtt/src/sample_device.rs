@@ -4,8 +4,8 @@ use crate::{
     cancellation_token::CancellationToken,
     device_manager::CommandResult,
     devices::{
-        Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, Entity, EntityDetails, EntityDetailsGetter,
-        EntityType, Light, Result, Sensor, Switch, Text,
+        Button, ButtonDeviceClass, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, Entity, EntityDetails,
+        EntityDetailsGetter, EntityType, Light, Result, Sensor, Switch, Text,
     },
     helpers::*,
 };
@@ -115,7 +115,6 @@ impl DeviceProvider for SampleDeviceProvider {
             )),
             is_random: self.is_random,
         });
-
         let server_mode_switch = Box::new(ServerModeSwitch {
             device_information: Box::new(Switch::new(
                 main_device.details.identifier.clone(),
@@ -126,12 +125,23 @@ impl DeviceProvider for SampleDeviceProvider {
             is_random: self.is_random,
             is_on: false,
         });
+        let some_button = Box::new(SomeButton {
+            device_information: Box::new(
+                Button::new(
+                    main_device.details.identifier.clone(),
+                    "Some Button".to_string(),
+                    "mdi:button-pointer".to_string(),
+                )
+                .with_device_class(ButtonDeviceClass::Identify),
+            ),
+        });
         main_device.entities = vec![
             living_room_light,
             log_text,
             memory_sensor,
             server_mode_switch,
             uptime_sensor,
+            some_button,
         ];
         let mut dependent_device = Device::new(
             DeviceDetails {
@@ -381,6 +391,35 @@ impl Entity for LivingRoomLight {
             "OFF"
         };
         Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => light_state.to_string()})
+    }
+}
+
+#[derive(Debug)]
+struct SomeButton {
+    device_information: Box<Button>,
+}
+#[async_trait]
+impl Entity for SomeButton {
+    fn get_data(&self) -> &dyn EntityType {
+        self.device_information.as_ref()
+    }
+    async fn do_handle_command(
+        &mut self,
+        topic: &str,
+        payload: &str,
+        _cancellation_token: CancellationToken,
+    ) -> Result<CommandResult> {
+        error!(
+            "SomeButton received entity {} event for topic {topic} and payload {payload}",
+            self.device_information.details().name,
+        );
+        return Ok(CommandResult {
+            handled: true,
+            state_update_topics: None,
+        });
+    }
+    async fn get_entity_data(&self, _cancellation_token: CancellationToken) -> Result<HashMap<String, String>> {
+        Ok(HashMap::new())
     }
 }
 
@@ -637,6 +676,15 @@ mod tests {
                    "platform": "text",
                    "state_topic": "test_device/log_text/state",
                    "unique_id": "test_device_log_text"
+                },
+                "some_button": {
+                  "command_topic": "test_device/some_button/command",
+                  "device_class": "identify",
+                  "icon": "mdi:button-pointer",
+                  "name": "Some Button",
+                  "platform": "button",
+                  "state_topic": "test_device/some_button/state",
+                  "unique_id": "test_device_some_button",
                 },
            },
         });

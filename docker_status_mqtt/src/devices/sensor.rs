@@ -47,6 +47,22 @@ impl Sensor {
     }
 }
 
+impl From<EntityDetails> for Sensor {
+    fn from(details: EntityDetails) -> Self {
+        Sensor {
+            details,
+            unit_of_measurement: None,
+            device_class: None,
+        }
+    }
+}
+
+impl From<EntityDetails> for Box<Sensor> {
+    fn from(val: EntityDetails) -> Self {
+        Box::new(Sensor::from(val))
+    }
+}
+
 #[async_trait]
 impl EntityType for Sensor {
     async fn json_for_discovery<'a>(

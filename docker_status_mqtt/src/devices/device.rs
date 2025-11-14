@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(details.device_identifier, "device_with_underscores");
         assert_eq!(details.id, "entity_with_spaces_special");
         assert_eq!(details.name, "Entity with Spaces & Special!");
-        assert_eq!(details.icon, "mdi:special-icon");
+        assert_eq!(details.icon.unwrap(), "mdi:special-icon");
     }
 
     #[tokio::test]

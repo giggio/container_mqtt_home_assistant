@@ -1,24 +1,30 @@
-use bollard::secret::ContainerStatsResponse;
-use bollard::secret::ContainerSummary;
-use chrono::DateTime;
-use chrono::Utc;
+use async_trait::async_trait;
+use bollard::{
+    query_parameters::{
+        InspectContainerOptionsBuilder, ListContainersOptionsBuilder, LogsOptionsBuilder,
+        RemoveContainerOptionsBuilder, RestartContainerOptionsBuilder, StartContainerOptionsBuilder,
+        StatsOptionsBuilder, StopContainerOptionsBuilder,
+    },
+    secret::{ContainerStatsResponse, ContainerSummary},
+};
+use chrono::{DateTime, Utc};
+use futures::TryStreamExt;
 use hashbrown::{HashMap, HashSet};
-use std::fmt::Debug;
-use std::sync::Arc;
+use std::{
+    fmt::Debug,
+    sync::{Arc, atomic::AtomicBool},
+};
 use tokio::sync::RwLock;
 
-use crate::devices::EntityDetails;
-use crate::devices::EntityDetailsGetter;
-use crate::devices::Sensor;
 use crate::{
     cancellation_token::CancellationToken,
-    devices::{Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, Entity, EntityType},
+    device_manager::CommandResult,
+    devices::{
+        Button, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, Entity, EntityDetails,
+        EntityDetailsGetter, EntityType, Sensor,
+    },
     helpers::*,
 };
-
-use async_trait::async_trait;
-use bollard::query_parameters::{ListContainersOptionsBuilder, LogsOptionsBuilder, StatsOptionsBuilder};
-use futures::TryStreamExt;
 
 pub type UtcDateTime = DateTime<chrono::Utc>;
 
@@ -28,8 +34,13 @@ const HOST_DEVICE_METADATA: &str = "host_device";
 pub mod docker_client {
     use bollard::{
         container::LogOutput,
-        models::ContainerSummary,
-        query_parameters::{ListContainersOptions, LogsOptions, StatsOptions},
+        // container::StartContainerOptions,
+        errors::Error,
+        models::{ContainerInspectResponse, ContainerSummary},
+        query_parameters::{
+            InspectContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
+            RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
+        },
         secret::ContainerStatsResponse,
     };
     use futures::stream::Stream;
@@ -42,6 +53,11 @@ pub mod docker_client {
             pub fn logs(&self, container_name: &str, options: Option<LogsOptions>) -> Pin<Box<dyn Stream<Item = std::result::Result<LogOutput, bollard::errors::Error>> + Send + 'static>>;
             pub async fn list_containers(&self, options: Option<ListContainersOptions>) -> std::result::Result<Vec<ContainerSummary>, bollard::errors::Error>;
             pub fn stats(&self, container_name: &str, options: Option<StatsOptions>) -> Pin<Box<dyn Stream<Item = std::result::Result<ContainerStatsResponse, bollard::errors::Error>> + Send + 'static>>;
+            pub async fn restart_container(&self, container_name: &str, options: Option<RestartContainerOptions>) -> std::result::Result<(), Error>;
+            pub async fn start_container(&self, container_name: &str, options: Option<StartContainerOptions>) -> std::result::Result<(), Error>;
+            pub async fn stop_container(&self, container_name: &str, options: Option<StopContainerOptions>) -> std::result::Result<(), Error>;
+            pub async fn remove_container(&self, container_name: &str, options: Option<RemoveContainerOptions>) -> std::result::Result<(), Error>;
+            pub async fn inspect_container(&self, container_name: &str, options: Option<InspectContainerOptions>) -> std::result::Result<ContainerInspectResponse, Error>;
         }
 
         impl Clone for Docker {
@@ -121,6 +137,7 @@ impl DockerDeviceProvider {
                 UtcDateTime::MIN_UTC,
                 ContainerStatsResponse::default(),
             )));
+            let should_get_logs = Arc::new(AtomicBool::new(false));
             let container_device = Device::new_with_entities(
                 DeviceDetails {
                     name: container_name.clone(),
@@ -139,11 +156,20 @@ impl DockerDeviceProvider {
                     Box::new(LogText {
                         device_information: Box::new(Sensor::new_simple(
                             device_identifier.clone(),
-                            "Log",
+                            "Logs",
                             "mdi:script-text-outline",
                         )),
                         docker: self.docker.clone(),
                         container_name: container_name.clone(),
+                        should_get_logs: should_get_logs.clone(),
+                    }),
+                    Box::new(GetLogsButton {
+                        device_information: Box::new(Button::new(
+                            &device_identifier,
+                            "Get Logs",
+                            "mdi:script-text-play-outline",
+                        )),
+                        should_get_logs,
                     }),
                     Box::new(UsedMemory {
                         device_information: Box::new(Sensor::new(
@@ -159,13 +185,39 @@ impl DockerDeviceProvider {
                     }),
                     Box::new(UsedCPUs {
                         device_information: Box::new(Sensor::new_with_details(
-                            EntityDetails::new(device_identifier, "Used CPUs", "mdi:chip"),
+                            EntityDetails::new(&device_identifier, "Used CPUs", "mdi:chip"),
                             Some("%".to_string()),
                             None,
                         )),
                         docker: self.docker.clone(),
                         container_name: container_name.clone(),
                         stats_cache: stats_cache.clone(),
+                    }),
+                    Box::new(ContainerStatus {
+                        device_information: EntityDetails::new_without_icon(&device_identifier, "Status").into(),
+                        docker: self.docker.clone(),
+                        container_name: container_name.clone(),
+                        cancellation_token: cancellation_token.clone(),
+                    }),
+                    Box::new(RestartButton {
+                        device_information: Box::new(Button::new(&device_identifier, "Restart", "mdi:restart")),
+                        docker: self.docker.clone(),
+                        container_name: container_name.clone(),
+                    }),
+                    Box::new(StartButton {
+                        device_information: Box::new(Button::new(&device_identifier, "Start", "mdi:play")),
+                        docker: self.docker.clone(),
+                        container_name: container_name.clone(),
+                    }),
+                    Box::new(StopButton {
+                        device_information: Box::new(Button::new(&device_identifier, "Stop", "mdi:stop")),
+                        docker: self.docker.clone(),
+                        container_name: container_name.clone(),
+                    }),
+                    Box::new(RemoveButton {
+                        device_information: Box::new(Button::new(&device_identifier, "Remove", "mdi:delete")),
+                        docker: self.docker.clone(),
+                        container_name: container_name.clone(),
                     }),
                 ],
                 self.id(),
@@ -321,6 +373,7 @@ struct LogText {
     device_information: Box<Sensor>,
     docker: Docker,
     container_name: String,
+    should_get_logs: Arc<AtomicBool>,
 }
 #[async_trait]
 impl Entity for LogText {
@@ -331,6 +384,10 @@ impl Entity for LogText {
         &self,
         _cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
+        if !self.should_get_logs.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(HashMap::new());
+        }
+        self.should_get_logs.store(false, std::sync::atomic::Ordering::SeqCst);
         let logs = self.docker.logs(
             &self.container_name,
             Some(LogsOptionsBuilder::new().stdout(true).stderr(true).tail("3").build()),
@@ -344,6 +401,34 @@ impl Entity for LogText {
             .join("\n");
         logs.truncate(255);
         Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => logs})
+    }
+}
+
+#[derive(Debug)]
+struct GetLogsButton {
+    device_information: Box<Button>,
+    should_get_logs: Arc<AtomicBool>,
+}
+#[async_trait]
+impl Entity for GetLogsButton {
+    fn get_data(&self) -> &dyn EntityType {
+        self.device_information.as_ref()
+    }
+    async fn do_handle_command(
+        &mut self,
+        topic: &str,
+        _payload: &str,
+        _cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<CommandResult> {
+        trace!(
+            "RestartButton received entity {} event for topic {topic}",
+            self.device_information.details().name,
+        );
+        self.should_get_logs.store(true, std::sync::atomic::Ordering::SeqCst);
+        return Ok(CommandResult {
+            handled: true,
+            state_update_topics: None,
+        });
     }
 }
 
@@ -367,6 +452,35 @@ impl Entity for NumberOfContainers {
             .await?
             .len();
         Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => count.to_string()})
+    }
+}
+
+#[derive(Debug)]
+struct ContainerStatus {
+    device_information: Box<Sensor>,
+    docker: Docker,
+    container_name: String,
+    cancellation_token: CancellationToken,
+}
+#[async_trait]
+impl Entity for ContainerStatus {
+    fn get_data(&self) -> &dyn EntityType {
+        self.device_information.as_ref()
+    }
+    async fn get_entity_data(
+        &self,
+        _cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<HashMap<String, String>> {
+        let inspect = self
+            .cancellation_token
+            .wait_on(self.docker.inspect_container(
+                &self.container_name,
+                Some(InspectContainerOptionsBuilder::new().build()),
+            ))
+            .await??;
+        Ok(
+            hashmap! {self.device_information.details().get_topic_for_state(None) => inspect.state.unwrap().status.unwrap().to_string()},
+        )
     }
 }
 
@@ -479,6 +593,148 @@ async fn get_container_stats(
     }
 }
 
+#[derive(Debug)]
+struct RestartButton {
+    device_information: Box<Button>,
+    docker: Docker,
+    container_name: String,
+}
+#[async_trait]
+impl Entity for RestartButton {
+    fn get_data(&self) -> &dyn EntityType {
+        self.device_information.as_ref()
+    }
+    async fn do_handle_command(
+        &mut self,
+        topic: &str,
+        _payload: &str,
+        cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<CommandResult> {
+        trace!(
+            "RestartButton received entity {} event for topic {topic}",
+            self.device_information.details().name,
+        );
+        cancellation_token
+            .wait_on(self.docker.restart_container(
+                &self.container_name,
+                Some(RestartContainerOptionsBuilder::new().t(5).build()),
+            ))
+            .await??;
+        return Ok(CommandResult {
+            handled: true,
+            state_update_topics: None,
+        });
+    }
+}
+
+#[derive(Debug)]
+struct StartButton {
+    device_information: Box<Button>,
+    docker: Docker,
+    container_name: String,
+}
+#[async_trait]
+impl Entity for StartButton {
+    fn get_data(&self) -> &dyn EntityType {
+        self.device_information.as_ref()
+    }
+    async fn do_handle_command(
+        &mut self,
+        topic: &str,
+        _payload: &str,
+        cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<CommandResult> {
+        trace!(
+            "StartButton received entity {} event for topic {topic}",
+            self.device_information.details().name,
+        );
+        cancellation_token
+            .wait_on(
+                self.docker
+                    .start_container(&self.container_name, Some(StartContainerOptionsBuilder::new().build())),
+            )
+            .await??;
+        return Ok(CommandResult {
+            handled: true,
+            state_update_topics: None,
+        });
+    }
+}
+
+#[derive(Debug)]
+struct StopButton {
+    device_information: Box<Button>,
+    docker: Docker,
+    container_name: String,
+}
+#[async_trait]
+impl Entity for StopButton {
+    fn get_data(&self) -> &dyn EntityType {
+        self.device_information.as_ref()
+    }
+    async fn do_handle_command(
+        &mut self,
+        topic: &str,
+        _payload: &str,
+        cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<CommandResult> {
+        trace!(
+            "StopButton received entity {} event for topic {topic}",
+            self.device_information.details().name,
+        );
+        cancellation_token
+            .wait_on(self.docker.stop_container(
+                &self.container_name,
+                Some(StopContainerOptionsBuilder::new().t(5).build()),
+            ))
+            .await??;
+        return Ok(CommandResult {
+            handled: true,
+            state_update_topics: None,
+        });
+    }
+}
+
+#[derive(Debug)]
+struct RemoveButton {
+    device_information: Box<Button>,
+    docker: Docker,
+    container_name: String,
+}
+#[async_trait]
+impl Entity for RemoveButton {
+    fn get_data(&self) -> &dyn EntityType {
+        self.device_information.as_ref()
+    }
+    async fn do_handle_command(
+        &mut self,
+        topic: &str,
+        _payload: &str,
+        cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<CommandResult> {
+        trace!(
+            "RemoveButton received entity {} event for topic {topic}",
+            self.device_information.details().name,
+        );
+        cancellation_token
+            .wait_on(self.docker.stop_container(
+                &self.container_name,
+                Some(StopContainerOptionsBuilder::new().t(5).build()),
+            ))
+            .await??;
+        cancellation_token
+            .wait_on(
+                self.docker
+                    .remove_container(&self.container_name, Some(RemoveContainerOptionsBuilder::new().build())),
+            )
+            .await??;
+        return Ok(CommandResult {
+            handled: true,
+            state_update_topics: None,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,6 +766,7 @@ mod tests {
             device_information: Box::new(Sensor::new_simple("test_container", "Log", "mdi:script-text-outline")),
             docker: mock_docker,
             container_name: "test_container".to_string(),
+            should_get_logs: Arc::new(AtomicBool::new(true)),
         };
 
         let data = log_text.get_entity_data(CancellationToken::default()).await.unwrap();
@@ -539,6 +796,7 @@ mod tests {
             )),
             docker: mock_docker,
             container_name: "test_container".to_string(),
+            should_get_logs: Arc::new(AtomicBool::new(true)),
         };
 
         let data = log_text.get_entity_data(CancellationToken::default()).await.unwrap();
@@ -546,6 +804,30 @@ mod tests {
         assert_eq!(data.len(), 1);
         let topic = "test_container/log/state";
         assert_eq!(data.get(topic).unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn test_log_text_get_entity_data_no_logs_when_shouldnt_get_logs() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker
+            .expect_logs()
+            .returning(|_, _| Box::pin(stream::iter(vec![])));
+
+        let log_text = LogText {
+            device_information: Box::new(Sensor::new_simple(
+                "test_container".to_string(),
+                "Log".to_string(),
+                "mdi:script-text-outline".to_string(),
+            )),
+            docker: mock_docker,
+            container_name: "test_container".to_string(),
+            should_get_logs: Arc::new(AtomicBool::new(false)),
+        };
+
+        let data = log_text.get_entity_data(CancellationToken::default()).await.unwrap();
+
+        assert_eq!(data.len(), 0);
     }
 
     #[tokio::test]
@@ -859,6 +1141,7 @@ mod tests {
                         )),
                         docker: MockDocker::default(),
                         container_name: "container1".to_string(),
+                        should_get_logs: Arc::new(AtomicBool::new(false)),
                     })],
                     "docker_device_provider".to_string(),
                     CancellationToken::default(),

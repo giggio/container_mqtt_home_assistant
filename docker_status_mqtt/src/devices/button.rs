@@ -11,45 +11,54 @@ use crate::{
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(EntityDetailsGetter, Debug)]
-pub struct Switch {
+pub struct Button {
     pub details: EntityDetails,
-    pub payload_on: String,
-    pub payload_off: String,
     pub device_class: Option<String>,
     pub command_topic: String,
 }
 
-impl Switch {
-    pub fn new(device_identifier: String, name: String, icon: String, device_class: Option<String>) -> Self {
-        Self::new_with_details(EntityDetails::new(device_identifier, name, icon), device_class)
-    }
-    pub fn new_with_details(details: EntityDetails, device_class: Option<String>) -> Self {
-        let command_topic = details.get_topic_for_command(None);
-        Switch {
-            details: details.add_command(command_topic.clone()),
-            payload_on: "ON".to_owned(),
-            payload_off: "OFF".to_owned(),
-            device_class,
-            command_topic,
-        }
-    }
+pub enum ButtonDeviceClass {
+    Identify,
+    #[allow(dead_code)]
+    Restart,
+    #[allow(dead_code)]
+    Update,
 }
 
-impl From<EntityDetails> for Switch {
-    fn from(details: EntityDetails) -> Self {
+impl Button {
+    pub fn new(device_identifier: impl Into<String>, name: impl Into<String>, icon: impl Into<String>) -> Self {
+        Self::new_with_details(EntityDetails::new(device_identifier.into(), name, icon))
+    }
+    pub fn new_with_details(details: EntityDetails) -> Self {
         let command_topic = details.get_topic_for_command(None);
-        Switch {
-            details,
-            payload_on: "ON".to_owned(),
-            payload_off: "OFF".to_owned(),
+        Button {
+            details: details.add_command(command_topic.clone()),
             device_class: None,
             command_topic,
         }
     }
+
+    pub fn with_device_class(mut self, device_class: ButtonDeviceClass) -> Self {
+        self.device_class = Some(
+            match device_class {
+                ButtonDeviceClass::Identify => "identify",
+                ButtonDeviceClass::Restart => "restart",
+                ButtonDeviceClass::Update => "update",
+            }
+            .to_string(),
+        );
+        self
+    }
+}
+
+impl From<EntityDetails> for Box<Button> {
+    fn from(val: EntityDetails) -> Self {
+        Box::new(Button::new_with_details(val))
+    }
 }
 
 #[async_trait]
-impl EntityType for Switch {
+impl EntityType for Button {
     async fn json_for_discovery<'a>(
         &'a self,
         device: &'a Device,
@@ -57,9 +66,7 @@ impl EntityType for Switch {
     ) -> Result<serde_json::Value> {
         let json = json!({
             "device_class": self.device_class,
-            "platform": "switch",
-            "payload_on": self.payload_on,
-            "payload_off": self.payload_off,
+            "platform": "button",
             "command_topic": self.command_topic,
         });
         let mut entity_details_json = self.details.json_for_discovery(device).await?;
@@ -83,46 +90,38 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn test_switch_command_topic() {
-        let switch = Switch::new(
-            "dev1".to_string(),
-            "Test Switch".to_string(),
-            "mdi:switch".to_string(),
-            Some("switch".to_string()),
-        );
-        assert_eq!(switch.command_topic, "dev1/test_switch/command");
+    async fn test_button_command_topic() {
+        let button = Button::new("dev1".to_string(), "Test Button".to_string(), "mdi:button".to_string());
+        assert_eq!(button.command_topic, "dev1/test_button/command");
         assert!(
-            switch
+            button
                 .details
                 .command_topics
-                .contains(&"dev1/test_switch/command".to_string())
+                .contains(&"dev1/test_button/command".to_string())
         );
     }
 
     #[tokio::test]
-    async fn test_switch_json_for_discovery() {
+    async fn test_button_json_for_discovery() {
         let device = create_test_device_with_identifier("test_device");
-        let switch = Switch::new(
+        let button = Button::new(
             "test_device".to_string(),
-            "Test Switch".to_string(),
-            "mdi:switch".to_string(),
-            None,
+            "Test Button".to_string(),
+            "mdi:button".to_string(),
         );
-        let json = switch
+        let json = button
             .json_for_discovery(&device, CancellationToken::default())
             .await
             .unwrap();
         let expected_json = json!({
-          "test_switch": {
-            "command_topic": "test_device/test_switch/command",
+          "test_button": {
+            "command_topic": "test_device/test_button/command",
             "device_class": null,
-            "icon": "mdi:switch",
-            "name": "Test Switch",
-            "payload_off": "OFF",
-            "payload_on": "ON",
-            "platform": "switch",
-            "state_topic": "test_device/test_switch/state",
-            "unique_id": "test_device_test_switch"
+            "icon": "mdi:button",
+            "name": "Test Button",
+            "platform": "button",
+            "state_topic": "test_device/test_button/state",
+            "unique_id": "test_device_test_button"
           }
         });
         assert_eq!(
@@ -132,29 +131,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_switch_json_for_discovery_with_device_class() {
+    async fn test_button_json_for_discovery_with_device_class() {
         let device = create_test_device_with_identifier("test_device");
-        let switch = Switch::new(
+        let button = Button::new(
             "test_device".to_string(),
-            "Outlet Switch".to_string(),
+            "Outlet Button".to_string(),
             "mdi:power-socket".to_string(),
-            Some("outlet".to_string()),
-        );
-        let json = switch
+        )
+        .with_device_class(ButtonDeviceClass::Identify);
+        let json = button
             .json_for_discovery(&device, CancellationToken::default())
             .await
             .unwrap();
         let expected_json = json!({
-            "outlet_switch": {
-                "command_topic": "test_device/outlet_switch/command",
-                "device_class": "outlet",
+            "outlet_button": {
+                "command_topic": "test_device/outlet_button/command",
+                "device_class": "identify",
                 "icon": "mdi:power-socket",
-                "name": "Outlet Switch",
-                "payload_off": "OFF",
-                "payload_on": "ON",
-                "platform": "switch",
-                "state_topic": "test_device/outlet_switch/state",
-                "unique_id": "test_device_outlet_switch"
+                "name": "Outlet Button",
+                "platform": "button",
+                "state_topic": "test_device/outlet_button/state",
+                "unique_id": "test_device_outlet_button"
             }
         });
         assert_eq!(
