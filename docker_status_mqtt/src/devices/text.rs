@@ -73,7 +73,7 @@ impl EntityType for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::test_module::test_helpers::*;
+    use crate::devices::test_helpers::*;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 

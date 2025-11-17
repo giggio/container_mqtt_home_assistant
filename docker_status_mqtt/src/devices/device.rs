@@ -227,8 +227,8 @@ pub struct DeviceOrigin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::test_module::test_helpers::*;
-    use crate::devices::{EntityDetails, MockAnEntityType, MockEntity};
+    use crate::devices::test_helpers::*;
+    use crate::devices::{EntityDetails, MockEntity};
 
     use mockall::predicate;
     use pretty_assertions::assert_eq;

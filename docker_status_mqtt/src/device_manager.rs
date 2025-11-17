@@ -41,28 +41,6 @@ const DURATION_MAX: Duration = Duration::from_secs(u64::MAX);
 const DURATION_QUICK_CYCLE: Duration = Duration::from_millis(100);
 const DISCOVERY_PREFIX: &str = "homeassistant";
 
-#[cfg(test)]
-pub mod mqtt_client {
-    use rumqttc::v5::{ClientError, ConnectionError, Event, MqttOptions, mqttbytes::QoS};
-    use std::pin::Pin;
-    mockall::mock! {
-        pub EventLoop {
-            pub fn poll(&mut self) -> Pin<Box<dyn std::future::Future<Output = std::result::Result<Event, ConnectionError>> + Send>>;
-        }
-    }
-    mockall::mock! {
-        #[derive(Debug, Default)]
-        pub AsyncClient {
-            pub fn new(options: MqttOptions, capacity: usize) -> (Self, MockEventLoop);
-            pub fn publish(&self, topic: String, qos: QoS, retain: bool, payload: String) -> Pin<Box<dyn Future<Output = std::result::Result<(), ClientError>> + Send>>;
-            pub fn subscribe(&self, topic: String, qos: QoS) -> Pin<Box<dyn Future<Output = std::result::Result<(), ClientError>> + Send>>;
-            pub fn try_disconnect(&self) -> std::result::Result<(), ClientError>;
-        }
-        impl Clone for AsyncClient {
-            fn clone(&self) -> Self;
-        }
-    }
-}
 #[cfg(not(test))]
 pub mod mqtt_client {
     pub use rumqttc::v5::AsyncClient;
@@ -898,11 +876,33 @@ pub enum EventHandlingError {
 }
 
 #[cfg(test)]
+mod mqtt_client {
+    use rumqttc::v5::{ClientError, ConnectionError, Event, MqttOptions, mqttbytes::QoS};
+    use std::pin::Pin;
+    mockall::mock! {
+        pub EventLoop {
+            pub fn poll(&mut self) -> Pin<Box<dyn std::future::Future<Output = std::result::Result<Event, ConnectionError>> + Send>>;
+        }
+    }
+    mockall::mock! {
+        #[derive(Debug, Default)]
+        pub AsyncClient {
+            pub fn new(options: MqttOptions, capacity: usize) -> (Self, MockEventLoop);
+            pub fn publish(&self, topic: String, qos: QoS, retain: bool, payload: String) -> Pin<Box<dyn Future<Output = std::result::Result<(), ClientError>> + Send>>;
+            pub fn subscribe(&self, topic: String, qos: QoS) -> Pin<Box<dyn Future<Output = std::result::Result<(), ClientError>> + Send>>;
+            pub fn try_disconnect(&self) -> std::result::Result<(), ClientError>;
+        }
+        impl Clone for AsyncClient {
+            fn clone(&self) -> Self;
+        }
+    }
+}
+#[cfg(test)]
 mod tests {
     use std::future;
 
-    use crate::devices::test_module::test_helpers::*;
-    use crate::devices::{EntityDetails, MockAnEntityType, MockEntity};
+    use crate::devices::test_helpers::*;
+    use crate::devices::{EntityDetails, MockEntity};
 
     use super::*;
     use mockall::predicate;

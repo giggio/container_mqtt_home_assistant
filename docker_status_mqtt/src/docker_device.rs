@@ -30,44 +30,6 @@ pub type UtcDateTime = DateTime<chrono::Utc>;
 
 const HOST_DEVICE_METADATA: &str = "host_device";
 
-#[cfg(test)]
-pub mod docker_client {
-    use bollard::{
-        container::LogOutput,
-        // container::StartContainerOptions,
-        errors::Error,
-        models::{ContainerInspectResponse, ContainerSummary},
-        query_parameters::{
-            InspectContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
-            RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
-        },
-        secret::ContainerStatsResponse,
-    };
-    use futures::stream::Stream;
-    use std::pin::Pin;
-
-    mockall::mock! {
-        #[derive(Debug)]
-        pub Docker {
-            pub fn connect_with_socket_defaults() -> std::result::Result<Self, bollard::errors::Error>;
-            pub fn logs(&self, container_name: &str, options: Option<LogsOptions>) -> Pin<Box<dyn Stream<Item = std::result::Result<LogOutput, bollard::errors::Error>> + Send + 'static>>;
-            pub async fn list_containers(&self, options: Option<ListContainersOptions>) -> std::result::Result<Vec<ContainerSummary>, bollard::errors::Error>;
-            pub fn stats(&self, container_name: &str, options: Option<StatsOptions>) -> Pin<Box<dyn Stream<Item = std::result::Result<ContainerStatsResponse, bollard::errors::Error>> + Send + 'static>>;
-            pub async fn restart_container(&self, container_name: &str, options: Option<RestartContainerOptions>) -> std::result::Result<(), Error>;
-            pub async fn start_container(&self, container_name: &str, options: Option<StartContainerOptions>) -> std::result::Result<(), Error>;
-            pub async fn stop_container(&self, container_name: &str, options: Option<StopContainerOptions>) -> std::result::Result<(), Error>;
-            pub async fn remove_container(&self, container_name: &str, options: Option<RemoveContainerOptions>) -> std::result::Result<(), Error>;
-            pub async fn inspect_container(&self, container_name: &str, options: Option<InspectContainerOptions>) -> std::result::Result<ContainerInspectResponse, Error>;
-        }
-
-        impl Clone for Docker {
-            fn clone(&self) -> Self;
-        }
-    }
-
-    pub use MockDocker as Docker;
-}
-
 #[cfg(not(test))]
 pub mod docker_client {
     pub use bollard::Docker;
@@ -733,6 +695,43 @@ impl Entity for RemoveButton {
             state_update_topics: None,
         });
     }
+}
+
+#[cfg(test)]
+pub mod docker_client {
+    use bollard::{
+        container::LogOutput,
+        errors::Error,
+        models::{ContainerInspectResponse, ContainerSummary},
+        query_parameters::{
+            InspectContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
+            RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
+        },
+        secret::ContainerStatsResponse,
+    };
+    use futures::stream::Stream;
+    use std::pin::Pin;
+
+    mockall::mock! {
+        #[derive(Debug)]
+        pub Docker {
+            pub fn connect_with_socket_defaults() -> std::result::Result<Self, bollard::errors::Error>;
+            pub fn logs(&self, container_name: &str, options: Option<LogsOptions>) -> Pin<Box<dyn Stream<Item = std::result::Result<LogOutput, bollard::errors::Error>> + Send + 'static>>;
+            pub async fn list_containers(&self, options: Option<ListContainersOptions>) -> std::result::Result<Vec<ContainerSummary>, bollard::errors::Error>;
+            pub fn stats(&self, container_name: &str, options: Option<StatsOptions>) -> Pin<Box<dyn Stream<Item = std::result::Result<ContainerStatsResponse, bollard::errors::Error>> + Send + 'static>>;
+            pub async fn restart_container(&self, container_name: &str, options: Option<RestartContainerOptions>) -> std::result::Result<(), Error>;
+            pub async fn start_container(&self, container_name: &str, options: Option<StartContainerOptions>) -> std::result::Result<(), Error>;
+            pub async fn stop_container(&self, container_name: &str, options: Option<StopContainerOptions>) -> std::result::Result<(), Error>;
+            pub async fn remove_container(&self, container_name: &str, options: Option<RemoveContainerOptions>) -> std::result::Result<(), Error>;
+            pub async fn inspect_container(&self, container_name: &str, options: Option<InspectContainerOptions>) -> std::result::Result<ContainerInspectResponse, Error>;
+        }
+
+        impl Clone for Docker {
+            fn clone(&self) -> Self;
+        }
+    }
+
+    pub use MockDocker as Docker;
 }
 
 #[cfg(test)]

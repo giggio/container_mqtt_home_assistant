@@ -24,8 +24,7 @@ mod sensor;
 mod switch;
 mod text;
 
-#[cfg(test)]
-pub mod test_module;
+pub mod test_helpers;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -39,18 +38,6 @@ pub enum Error {
     IncorrectJsonStructure,
     #[error("Unknown error")]
     Unknown,
-}
-
-impl PartialEq<dyn Entity> for Box<dyn Entity + '_> {
-    fn eq(&self, other: &dyn Entity) -> bool {
-        self.get_data().details() == other.get_data().details()
-    }
-}
-
-impl PartialEq for dyn Entity + '_ {
-    fn eq(&self, other: &Self) -> bool {
-        self.get_data().details() == other.get_data().details()
-    }
 }
 
 #[async_trait]
@@ -101,6 +88,18 @@ pub trait Entity: Send + Sync + Debug {
     }
 }
 
+impl PartialEq<dyn Entity> for Box<dyn Entity + '_> {
+    fn eq(&self, other: &dyn Entity) -> bool {
+        self.get_data().details() == other.get_data().details()
+    }
+}
+
+impl PartialEq for dyn Entity + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.get_data().details() == other.get_data().details()
+    }
+}
+
 #[async_trait]
 pub trait EntityType: EntityDetailsGetter + Send + Sync + Debug {
     async fn json_for_discovery<'a>(
@@ -108,19 +107,6 @@ pub trait EntityType: EntityDetailsGetter + Send + Sync + Debug {
         device: &'a Device,
         cancellation_token: CancellationToken,
     ) -> Result<serde_json::Value>;
-}
-
-#[cfg(test)]
-mockall::mock! {
-    #[derive(Debug)]
-    pub AnEntityType { }
-    #[async_trait]
-    impl EntityType for AnEntityType {
-        async fn json_for_discovery<'a>(&'a self, device: &'a Device, cancellation_token: CancellationToken) -> Result<serde_json::Value>;
-    }
-    impl EntityDetailsGetter for AnEntityType {
-        fn details(&self) -> &EntityDetails;
-    }
 }
 
 #[derive(Debug, PartialEq)]

@@ -76,7 +76,7 @@ impl EntityType for Switch {
 
 #[cfg(test)]
 mod tests {
-    use crate::devices::test_module::test_helpers::*;
+    use crate::devices::test_helpers::*;
 
     use super::*;
     use pretty_assertions::assert_eq;

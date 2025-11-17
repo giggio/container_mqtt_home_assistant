@@ -285,7 +285,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
-    use crate::{cancellation_token::CancellationTokenSource, devices::test_module::test_helpers::*};
+    use crate::{cancellation_token::CancellationTokenSource, devices::test_helpers::*};
     use pretty_assertions::assert_eq;
 
     impl PartialEq for UpdateEvent {
