@@ -244,7 +244,16 @@ impl DeviceProvider for DockerDeviceProvider {
             "mdi:truck-cargo-container",
         ));
         let number_of_containers_data = Box::new(NumberOfContainers {
-            state_topic: number_of_containers.details().get_topic_for_command(None),
+            state_topic: number_of_containers.details().get_topic_for_state(None),
+            docker: self.docker.clone(),
+        });
+        let host_version = Box::new(Sensor::new_simple(
+            host_identifier.clone(),
+            "Host version",
+            "mdi:docker",
+        ));
+        let host_version_data = Box::new(HostVersion {
+            state_topic: host_version.details().get_topic_for_state(None),
             docker: self.docker.clone(),
         });
         let host_device = Device::new_with_entities(
@@ -261,8 +270,8 @@ impl DeviceProvider for DockerDeviceProvider {
                 url: "https://github.com/giggio/docker-status-mqtt".to_string(),
             },
             availability_topic.clone(),
-            vec![number_of_containers],
-            vec![number_of_containers_data],
+            vec![number_of_containers, host_version],
+            vec![number_of_containers_data, host_version_data],
             self.id(),
             cancellation_token.clone(),
         )
@@ -419,6 +428,26 @@ impl HandlesData for GetLogsButton {
             handled: true,
             state_update_topics: None,
         });
+    }
+}
+
+#[derive(Debug)]
+struct HostVersion {
+    state_topic: String,
+    docker: Docker,
+}
+#[async_trait]
+impl HandlesData for HostVersion {
+    async fn get_entity_data(
+        &self,
+        cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<HashMap<String, String>> {
+        let info = cancellation_token.wait_on(self.docker.info()).await??;
+        if let Some(version) = info.server_version {
+            Ok(hashmap! {self.state_topic.clone() => version})
+        } else {
+            Ok(HashMap::new())
+        }
     }
 }
 
@@ -724,7 +753,7 @@ pub mod docker_client {
     use bollard::{
         container::LogOutput,
         errors::Error,
-        models::{ContainerInspectResponse, ContainerSummary},
+        models::{ContainerInspectResponse, ContainerSummary, SystemInfo},
         query_parameters::{
             InspectContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
             RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
@@ -746,6 +775,7 @@ pub mod docker_client {
             pub async fn stop_container(&self, container_name: &str, options: Option<StopContainerOptions>) -> std::result::Result<(), Error>;
             pub async fn remove_container(&self, container_name: &str, options: Option<RemoveContainerOptions>) -> std::result::Result<(), Error>;
             pub async fn inspect_container(&self, container_name: &str, options: Option<InspectContainerOptions>) -> std::result::Result<ContainerInspectResponse, Error>;
+            pub async fn info(&self) -> std::result::Result<SystemInfo, Error>;
         }
 
         impl Clone for Docker {
