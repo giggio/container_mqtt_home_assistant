@@ -165,6 +165,13 @@ impl DockerDeviceProvider {
                 container_name: container_name.clone(),
                 cancellation_token: cancellation_token.clone(),
             });
+            let container_image: Box<Sensor> = EntityDetails::new(&device_identifier, "Image", "mdi:oci").into();
+            let container_static_data = Box::new(ContainerStaticData {
+                image: (
+                    container_image.details().get_topic_for_state(None),
+                    container.image.unwrap_or_default(),
+                ),
+            });
             let container_device = Device::new_with_entities(
                 DeviceDetails {
                     name: container_name.clone(),
@@ -185,6 +192,7 @@ impl DockerDeviceProvider {
                     used_memory,
                     used_cpus,
                     container_status,
+                    container_image,
                     restart_button,
                     start_button,
                     stop_button,
@@ -199,6 +207,7 @@ impl DockerDeviceProvider {
                     start_button_data,
                     stop_button_data,
                     remove_button_data,
+                    container_static_data,
                 ],
                 self.id(),
                 cancellation_token.clone(),
@@ -680,6 +689,22 @@ impl HandlesData for RemoveButton {
             handled: true,
             state_update_topics: None,
         });
+    }
+}
+
+#[derive(Debug)]
+struct ContainerStaticData {
+    image: (String, String),
+}
+#[async_trait]
+impl HandlesData for ContainerStaticData {
+    async fn get_entity_data(
+        &self,
+        _cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<HashMap<String, String>> {
+        Ok(hashmap! {
+            self.image.0.clone() => self.image.1.clone()
+        })
     }
 }
 
