@@ -4,8 +4,8 @@ use crate::{
     cancellation_token::CancellationToken,
     device_manager::CommandResult,
     devices::{
-        Button, ButtonDeviceClass, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, Entity, EntityDetails,
-        EntityDetailsGetter, EntityType, Light, Result, Sensor, Switch, Text,
+        Button, ButtonDeviceClass, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, EntityDetails,
+        EntityDetailsGetter, HandlesData, Light, Result, Sensor, Switch, Text,
     },
     helpers::*,
 };
@@ -70,70 +70,78 @@ impl DeviceProvider for SampleDeviceProvider {
             self.id(),
             CancellationToken::default(),
         );
-        let memory_sensor = Box::new(MemorySensor {
-            device_information: Box::new(Sensor::new_with_details(
-                EntityDetails::new(
-                    main_device.details.identifier.clone(),
-                    "Memory Usage".to_string(),
-                    "mdi:memory".to_string(),
-                )
-                .has_attributes(),
-                Some("MB".to_string()),
-                Some("data_size".to_string()),
-            )),
-            is_random: self.is_random,
-        });
-        let uptime_sensor = Box::new(UptimeSensor {
-            device_information: Box::new(Sensor::new(
+        let memory_sensor = Box::new(Sensor::new_with_details(
+            EntityDetails::new(
                 main_device.details.identifier.clone(),
-                "System Uptime".to_string(),
-                "mdi:clock-outline".to_string(),
-                "s".to_string(),
-                "duration".to_string(),
-            )),
+                "Memory Usage".to_string(),
+                "mdi:memory".to_string(),
+            )
+            .has_attributes(),
+            Some("MB".to_string()),
+            Some("data_size".to_string()),
+        ));
+        let memory_sensor_data = Box::new(MemorySensor {
+            is_random: self.is_random,
+            state_topic: memory_sensor.details().get_topic_for_state(None),
+            attributes_state_topic: memory_sensor.details().get_topic_for_state(Some("attributes")),
+        });
+        let uptime_sensor = Box::new(Sensor::new(
+            main_device.details.identifier.clone(),
+            "System Uptime".to_string(),
+            "mdi:clock-outline".to_string(),
+            "s".to_string(),
+            "duration".to_string(),
+        ));
+        let uptime_sensor_data = Box::new(UptimeSensor {
+            state_topic: uptime_sensor.details().get_topic_for_state(None),
             is_random: self.is_random,
         });
-        let living_room_light = Box::new(LivingRoomLight {
-            device_information: Box::new(
-                Light::new(
-                    main_device.details.identifier.clone(),
-                    "Living Room Light".to_string(),
-                    "mdi:lightbulb".to_string(),
-                )
-                .await
-                .support_brightness(100)
-                .await,
-            ),
+        let living_room_light = Box::new(
+            Light::new(
+                main_device.details.identifier.clone(),
+                "Living Room Light".to_string(),
+                "mdi:lightbulb".to_string(),
+            )
+            .await
+            .support_brightness(100)
+            .await,
+        );
+        let living_room_light_data = Box::new(LivingRoomLight {
             is_random: self.is_random,
             is_on: false,
+            state_topic: living_room_light.details().get_topic_for_state(None),
         });
-        let log_text = Box::new(LogText {
-            device_information: Box::new(Text::new(
-                main_device.details.identifier.clone(),
-                "Log text".to_string(),
-                "mdi:script-text-outline".to_string(),
-            )),
+        let log_text = Box::new(Text::new(
+            main_device.details.identifier.clone(),
+            "Log text".to_string(),
+            "mdi:script-text-outline".to_string(),
+        ));
+        let log_text_data = Box::new(LogText {
             is_random: self.is_random,
+            state_topic: log_text.details().get_topic_for_state(None),
         });
-        let server_mode_switch = Box::new(ServerModeSwitch {
-            device_information: Box::new(Switch::new(
-                main_device.details.identifier.clone(),
-                "Server Mode".to_owned(),
-                "mdi:server".to_owned(),
-                None,
-            )),
+        let server_mode_switch = Box::new(Switch::new(
+            main_device.details.identifier.clone(),
+            "Server Mode".to_owned(),
+            "mdi:server".to_owned(),
+            None,
+        ));
+        let server_mode_switch_data = Box::new(ServerModeSwitch {
             is_random: self.is_random,
             is_on: false,
+            state_topic: server_mode_switch.details().get_topic_for_state(None),
+            command_topic: server_mode_switch.details().get_topic_for_command(None),
         });
-        let some_button = Box::new(SomeButton {
-            device_information: Box::new(
-                Button::new(
-                    main_device.details.identifier.clone(),
-                    "Some Button".to_string(),
-                    "mdi:button-pointer".to_string(),
-                )
-                .with_device_class(ButtonDeviceClass::Identify),
-            ),
+        let some_button = Box::new(
+            Button::new(
+                main_device.details.identifier.clone(),
+                "Some Button".to_string(),
+                "mdi:button-pointer".to_string(),
+            )
+            .with_device_class(ButtonDeviceClass::Identify),
+        );
+        let some_button_data = Box::new(SomeButton {
+            command_topic: some_button.details().get_topic_for_command(None),
         });
         main_device.entities = vec![
             living_room_light,
@@ -142,6 +150,14 @@ impl DeviceProvider for SampleDeviceProvider {
             server_mode_switch,
             uptime_sensor,
             some_button,
+        ];
+        main_device.data_handlers = vec![
+            living_room_light_data,
+            log_text_data,
+            memory_sensor_data,
+            server_mode_switch_data,
+            uptime_sensor_data,
+            some_button_data,
         ];
         let mut dependent_device = Device::new(
             DeviceDetails {
@@ -161,15 +177,17 @@ impl DeviceProvider for SampleDeviceProvider {
             CancellationToken::default(),
         );
 
-        let log_text = Box::new(LogText {
-            device_information: Box::new(Text::new(
-                dependent_device.details.identifier.clone(),
-                "Some text".to_string(),
-                "mdi:card-text-outline".to_string(),
-            )),
+        let log_text = Box::new(Text::new(
+            dependent_device.details.identifier.clone(),
+            "Some text".to_string(),
+            "mdi:card-text-outline".to_string(),
+        ));
+        let log_text_data = Box::new(LogText {
             is_random: self.is_random,
+            state_topic: log_text.details().get_topic_for_state(None),
         });
         dependent_device.entities = vec![log_text];
+        dependent_device.data_handlers = vec![log_text_data];
         Ok(Devices::new_from_many_devices(
             vec![main_device, dependent_device],
             cancellation_token,
@@ -196,24 +214,19 @@ impl DeviceProvider for SampleDeviceProvider {
 
 #[derive(Debug)]
 struct MemorySensor {
-    device_information: Box<Sensor>,
     is_random: bool,
+    state_topic: String,
+    attributes_state_topic: String,
 }
 #[async_trait]
-impl Entity for MemorySensor {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
-    }
+impl HandlesData for MemorySensor {
     async fn do_handle_command(
         &mut self,
         topic: &str,
         payload: &str,
         _cancellation_token: CancellationToken,
     ) -> Result<CommandResult> {
-        error!(
-            "MemorySensor received entity {} event for topic {topic} and payload {payload}",
-            self.device_information.details().name,
-        );
+        error!("MemorySensor received event for topic {topic} and payload {payload}");
         return Ok(CommandResult {
             handled: true,
             state_update_topics: None,
@@ -227,7 +240,7 @@ impl Entity for MemorySensor {
         };
 
         Ok(hashmap! {
-            self.device_information.details().get_topic_for_state(Some("attributes")) => json!({
+            self.attributes_state_topic.clone() => json!({
                 "total": 16384,
                 "used": memory_usage,
                 "free": 16384 - memory_usage,
@@ -235,31 +248,25 @@ impl Entity for MemorySensor {
                 "manufacturer": "Toshiba",
                 "manufacture_date": "2024-02-07T08:21:56-03:00",
             }).to_string(),
-            self.device_information.details().get_topic_for_state(None) => memory_usage.to_string()
+            self.state_topic.clone() => memory_usage.to_string()
         })
     }
 }
 
 #[derive(Debug)]
 struct UptimeSensor {
-    device_information: Box<Sensor>,
     is_random: bool,
+    state_topic: String,
 }
 #[async_trait]
-impl Entity for UptimeSensor {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
-    }
+impl HandlesData for UptimeSensor {
     async fn do_handle_command(
         &mut self,
         topic: &str,
         payload: &str,
         _cancellation_token: CancellationToken,
     ) -> Result<CommandResult> {
-        error!(
-            "UptimeSensor received entity {} event for topic {topic} and payload {payload}",
-            self.device_information.details().name,
-        );
+        error!("UptimeSensor received event for topic {topic} and payload {payload}",);
         return Ok(CommandResult {
             handled: true,
             state_update_topics: None,
@@ -271,30 +278,24 @@ impl Entity for UptimeSensor {
         } else {
             2726
         };
-        Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => uptime.to_string()})
+        Ok(hashmap! {self.state_topic.clone() => uptime.to_string()})
     }
 }
 
 #[derive(Debug)]
 struct LogText {
-    device_information: Box<Text>,
     is_random: bool,
+    state_topic: String,
 }
 #[async_trait]
-impl Entity for LogText {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
-    }
+impl HandlesData for LogText {
     async fn do_handle_command(
         &mut self,
         topic: &str,
         payload: &str,
         _cancellation_token: CancellationToken,
     ) -> Result<CommandResult> {
-        error!(
-            "LogText received entity {} event for topic {topic} and payload {payload}",
-            self.device_information.details().name,
-        );
+        error!("LogText received event for topic {topic} and payload {payload}");
         return Ok(CommandResult {
             handled: true,
             state_update_topics: None,
@@ -310,20 +311,21 @@ impl Entity for LogText {
         } else {
             "This is a log text".to_string()
         };
-        Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => log_text.to_string()})
+        Ok(hashmap! {self.state_topic.clone() => log_text.to_string()})
     }
 }
 
 #[derive(Debug)]
 struct ServerModeSwitch {
-    device_information: Box<Switch>,
     is_random: bool,
     is_on: bool,
+    state_topic: String,
+    command_topic: String,
 }
 #[async_trait]
-impl Entity for ServerModeSwitch {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
+impl HandlesData for ServerModeSwitch {
+    fn get_command_topics(&self) -> Vec<&str> {
+        vec![&self.command_topic]
     }
     async fn do_handle_command(
         &mut self,
@@ -333,10 +335,7 @@ impl Entity for ServerModeSwitch {
     ) -> Result<CommandResult> {
         self.is_random = false;
         self.is_on = "ON" == payload;
-        error!(
-            "ServerModeSwitchEntity received entity {} event for topic {topic} and payload {payload}",
-            self.device_information.details().name,
-        );
+        error!("ServerModeSwitchEntity received event for topic {topic} and payload {payload}");
         Ok(CommandResult {
             handled: true,
             state_update_topics: Some(self.get_entity_data(cancellation_token).await?),
@@ -350,21 +349,18 @@ impl Entity for ServerModeSwitch {
         } else {
             "OFF"
         };
-        Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => is_on.to_string()})
+        Ok(hashmap! {self.state_topic.clone() => is_on.to_string()})
     }
 }
 
 #[derive(Debug)]
 struct LivingRoomLight {
-    device_information: Box<Light>,
     is_random: bool,
     is_on: bool,
+    state_topic: String,
 }
 #[async_trait]
-impl Entity for LivingRoomLight {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
-    }
+impl HandlesData for LivingRoomLight {
     async fn do_handle_command(
         &mut self,
         topic: &str,
@@ -373,10 +369,7 @@ impl Entity for LivingRoomLight {
     ) -> Result<CommandResult> {
         self.is_random = false;
         self.is_on = "ON" == payload;
-        error!(
-            "LivingRoomLight received entity {} event for topic {topic} and payload {payload}",
-            self.device_information.details().name,
-        );
+        error!("LivingRoomLight received event for topic {topic} and payload {payload}");
         return Ok(CommandResult {
             handled: true,
             state_update_topics: Some(self.get_entity_data(cancellation_token).await?),
@@ -390,18 +383,18 @@ impl Entity for LivingRoomLight {
         } else {
             "OFF"
         };
-        Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => light_state.to_string()})
+        Ok(hashmap! {self.state_topic.clone() => light_state.to_string()})
     }
 }
 
 #[derive(Debug)]
 struct SomeButton {
-    device_information: Box<Button>,
+    command_topic: String,
 }
 #[async_trait]
-impl Entity for SomeButton {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
+impl HandlesData for SomeButton {
+    fn get_command_topics(&self) -> Vec<&str> {
+        vec![&self.command_topic]
     }
     async fn do_handle_command(
         &mut self,
@@ -409,17 +402,11 @@ impl Entity for SomeButton {
         payload: &str,
         _cancellation_token: CancellationToken,
     ) -> Result<CommandResult> {
-        error!(
-            "SomeButton received entity {} event for topic {topic} and payload {payload}",
-            self.device_information.details().name,
-        );
+        error!("SomeButton received event for topic {topic} and payload {payload}");
         return Ok(CommandResult {
             handled: true,
             state_update_topics: None,
         });
-    }
-    async fn get_entity_data(&self, _cancellation_token: CancellationToken) -> Result<HashMap<String, String>> {
-        Ok(HashMap::new())
     }
 }
 
@@ -428,35 +415,11 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    fn create_device() -> Device {
-        Device::new(
-            DeviceDetails {
-                name: "Device 1".to_string(),
-                identifier: "device_1".to_string(),
-                manufacturer: "Test Manufacturer".to_string(),
-                sw_version: "1.0.0".to_string(),
-                via_device: None,
-            },
-            DeviceOrigin {
-                name: "test-origin".to_string(),
-                sw: "1.0.0".to_string(),
-                url: "http://example.com".to_string(),
-            },
-            "dev1/availability_topic".to_string(),
-            "sample_device_manager_id".to_string(),
-            CancellationToken::default(),
-        )
-    }
-
     #[tokio::test]
     async fn entity_server_mode_switch_update() {
         let mut server_mode_switch = ServerModeSwitch {
-            device_information: Box::new(Switch::new(
-                "device_1".to_string(),
-                "Server Mode".to_owned(),
-                "mdi:server".to_owned(),
-                None,
-            )),
+            state_topic: "device_1/server_mode/state".to_string(),
+            command_topic: "device_1/server_mode/command".to_string(),
             is_random: false,
             is_on: false,
         };
@@ -486,18 +449,12 @@ mod tests {
 
     #[tokio::test]
     async fn entity_server_mode_switch_handle_command() {
-        let mut device = create_device();
-        device.entities.push(Box::new(ServerModeSwitch {
-            device_information: Box::new(Switch::new(
-                "device_1".to_string(),
-                "Server Mode".to_owned(),
-                "mdi:server".to_owned(),
-                None,
-            )),
+        let mut server_mode_switch = ServerModeSwitch {
+            state_topic: "device_1/server_mode/state".to_string(),
+            command_topic: "device_1/server_mode/command".to_string(),
             is_random: false,
             is_on: false,
-        }));
-        let server_mode_switch = device.entities[0].as_mut();
+        };
         let result = server_mode_switch
             .handle_command("device_1/server_mode/command", "ON", CancellationToken::default())
             .await
@@ -511,19 +468,12 @@ mod tests {
 
     #[tokio::test]
     async fn entity_server_mode_switch_toggle() {
-        let mut device = create_device();
-        device.entities.push(Box::new(ServerModeSwitch {
-            device_information: Box::new(Switch::new(
-                "device_1".to_string(),
-                "Server Mode".to_owned(),
-                "mdi:server".to_owned(),
-                None,
-            )),
+        let mut server_mode_switch = ServerModeSwitch {
+            state_topic: "device_1/server_mode/state".to_string(),
+            command_topic: "device_1/server_mode/command".to_string(),
             is_random: false,
             is_on: false,
-        }));
-        let server_mode_switch = device.entities[0].as_mut();
-
+        };
         let result_on = server_mode_switch
             .handle_command("device_1/server_mode/command", "ON", CancellationToken::default())
             .await
@@ -551,19 +501,12 @@ mod tests {
 
     #[tokio::test]
     async fn entity_does_not_handle_wrong_topic() {
-        let mut device = create_device();
-        device.entities.push(Box::new(ServerModeSwitch {
-            device_information: Box::new(Switch::new(
-                "device_1".to_string(),
-                "Server Mode".to_owned(),
-                "mdi:server".to_owned(),
-                None,
-            )),
+        let mut server_mode_switch = ServerModeSwitch {
+            state_topic: "device_1/server_mode/state".to_string(),
+            command_topic: "device_1/server_mode/command".to_string(),
             is_random: false,
             is_on: false,
-        }));
-        let server_mode_switch = device.entities[0].as_mut();
-
+        };
         let result = server_mode_switch
             .handle_command("wrong/topic", "ON", CancellationToken::default())
             .await

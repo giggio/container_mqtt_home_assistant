@@ -42,22 +42,21 @@ pub enum Error {
 
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
-pub trait Entity: Send + Sync + Debug {
+pub trait HandlesData: Send + Sync + Debug {
+    #[allow(clippy::needless_lifetimes)] // needed because of automock
+    fn get_command_topics<'a>(&'a self) -> Vec<&'a str> {
+        Vec::new()
+    }
     async fn get_entity_data(&self, _cancellation_token: CancellationToken) -> Result<HashMap<String, String>> {
         Ok(HashMap::new())
     }
-    fn get_data(&self) -> &dyn EntityType;
-    #[allow(unused_variables)]
     async fn do_handle_command(
         &mut self,
         topic: &str,
-        payload: &str,
-        cancellation_token: CancellationToken,
+        _payload: &str,
+        _cancellation_token: CancellationToken,
     ) -> Result<CommandResult> {
-        warn!(
-            "Entity {} received command for topic {topic} but has no handler implemented",
-            self.get_data().details().name
-        );
+        warn!("Received command for topic {topic} but has no handler implemented",);
         Ok(CommandResult {
             handled: false,
             state_update_topics: None,
@@ -69,44 +68,38 @@ pub trait Entity: Send + Sync + Debug {
         payload: &str,
         cancellation_token: CancellationToken,
     ) -> Result<CommandResult> {
-        if !self.get_data().details().command_topics.contains(&topic.to_owned()) {
-            trace!(
-                "Entity {} received event for topic {topic} and CANNOT handle it",
-                self.get_data().details().name
-            );
+        if !self.get_command_topics().contains(&topic) {
+            trace!("Received event for topic {topic} and CANNOT handle it");
             Ok(CommandResult {
                 handled: false,
                 state_update_topics: None,
             })
         } else {
-            trace!(
-                "Entity {} received event for topic {topic} and CAN handle it",
-                self.get_data().details().name
-            );
+            trace!("Received event for topic {topic} and CAN handle it");
             self.do_handle_command(topic, payload, cancellation_token).await
         }
     }
 }
 
-impl PartialEq<dyn Entity> for Box<dyn Entity + '_> {
-    fn eq(&self, other: &dyn Entity) -> bool {
-        self.get_data().details() == other.get_data().details()
-    }
-}
-
-impl PartialEq for dyn Entity + '_ {
-    fn eq(&self, other: &Self) -> bool {
-        self.get_data().details() == other.get_data().details()
-    }
-}
-
 #[async_trait]
-pub trait EntityType: EntityDetailsGetter + Send + Sync + Debug {
+pub trait Entity: EntityDetailsGetter + Send + Sync + Debug {
     async fn json_for_discovery<'a>(
         &'a self,
         device: &'a Device,
         cancellation_token: CancellationToken,
     ) -> Result<serde_json::Value>;
+}
+
+impl PartialEq<dyn Entity> for Box<dyn Entity + '_> {
+    fn eq(&self, other: &dyn Entity) -> bool {
+        self.details() == other.details()
+    }
+}
+
+impl PartialEq for dyn Entity + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.details() == other.details()
+    }
 }
 
 #[derive(Debug, PartialEq)]

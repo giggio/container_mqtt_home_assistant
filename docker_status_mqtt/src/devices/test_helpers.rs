@@ -8,7 +8,7 @@ use serde_json::json;
 use crate::{
     cancellation_token::CancellationToken,
     devices::{
-        Devices, EntityDetails, EntityDetailsGetter, EntityType, MockEntity,
+        Devices, Entity, EntityDetails, EntityDetailsGetter, MockHandlesData,
         device::{Device, DeviceDetails, DeviceOrigin},
     },
 };
@@ -57,8 +57,8 @@ pub fn create_test_device_with_identifier(identifier: &str) -> Device {
     )
 }
 
-pub fn get_mock_entity() -> MockEntity {
-    let mut entity_type = MockAnEntityType::new();
+pub fn get_mock_entity() -> MockAnEntity {
+    let mut entity_type = MockAnEntity::new();
     entity_type
         .expect_json_for_discovery()
         .returning(|_, _| Ok(json!({ "test": true })));
@@ -66,12 +66,12 @@ pub fn get_mock_entity() -> MockEntity {
         EntityDetails::new("dev1".to_string(), "Test Name".to_string(), "testicon".to_string())
             .add_command("dev1/test_name/command".to_string()),
     );
-    let mut mock_entity = MockEntity::new();
-    mock_entity
-        .expect_get_data()
-        .return_const(Box::new(entity_type))
-        .times(..);
-    mock_entity
+    entity_type
+}
+
+pub fn get_mock_data_handler() -> MockHandlesData {
+    let mut data_handler = MockHandlesData::new();
+    data_handler
         .expect_get_entity_data()
         .returning(|_| {
             Box::pin(future::ready(Ok(
@@ -79,7 +79,7 @@ pub fn get_mock_entity() -> MockEntity {
             )))
         })
         .times(..);
-    mock_entity
+    data_handler
 }
 
 pub fn make_empty_device() -> Device {
@@ -108,12 +108,12 @@ pub fn make_empty_devices() -> Devices {
 
 mockall::mock! {
     #[derive(Debug)]
-    pub AnEntityType { }
+    pub AnEntity { }
     #[async_trait]
-    impl EntityType for AnEntityType {
+    impl Entity for AnEntity {
         async fn json_for_discovery<'a>(&'a self, device: &'a Device, cancellation_token: CancellationToken) -> crate::devices::Result<serde_json::Value>;
     }
-    impl EntityDetailsGetter for AnEntityType {
+    impl EntityDetailsGetter for AnEntity {
         fn details(&self) -> &EntityDetails;
     }
 }

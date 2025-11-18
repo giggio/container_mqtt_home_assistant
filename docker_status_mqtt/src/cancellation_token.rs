@@ -175,7 +175,6 @@ mod tests {
 
         assert!(!source.is_cancelled());
 
-        // Cancel the source
         source.cancel().await;
 
         assert!(source.is_cancelled());
@@ -186,7 +185,6 @@ mod tests {
         let mut source = CancellationTokenSource::new();
         let token = source.create_token().await;
 
-        // Future completes immediately
         let result = token
             .wait_on(async {
                 sleep(Duration::from_millis(10)).await;

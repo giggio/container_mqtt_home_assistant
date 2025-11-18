@@ -901,8 +901,9 @@ mod mqtt_client {
 mod tests {
     use std::future;
 
+    use crate::devices::EntityDetails;
+    use crate::devices::MockHandlesData;
     use crate::devices::test_helpers::*;
-    use crate::devices::{EntityDetails, MockEntity};
 
     use super::*;
     use mockall::predicate;
@@ -1141,7 +1142,7 @@ mod tests {
                 })
                 .times(1);
         });
-        let mut entity_type = MockAnEntityType::new();
+        let mut entity_type = MockAnEntity::new();
         entity_type.expect_json_for_discovery().returning(|_, _| {
             Ok(json!({
                 "name": "Test Switch",
@@ -1163,12 +1164,10 @@ mod tests {
             EntityDetails::new("dev1".to_string(), "Test Switch".to_string(), "mdi:switch".to_string())
                 .add_command("dev1/test_switch/command".to_string()),
         );
-        let mut mock_entity = MockEntity::new();
-        mock_entity
-            .expect_get_data()
-            .return_const(Box::new(entity_type))
-            .times(2);
-        mock_entity
+        let mut device = make_empty_device();
+        device.entities.push(Box::new(entity_type));
+        let mut data_handler = MockHandlesData::new();
+        data_handler
             .expect_get_entity_data()
             .returning(|_| {
                 Box::pin(future::ready(Ok(
@@ -1176,8 +1175,7 @@ mod tests {
                 )))
             })
             .times(1);
-        let mut device = make_empty_device();
-        device.entities.push(Box::new(mock_entity));
+        device.data_handlers.push(Box::new(data_handler));
         let manager = make_device_manager();
         manager.set_connected(true);
         manager
@@ -1190,8 +1188,8 @@ mod tests {
     #[serial]
     async fn test_deal_with_command_publishes_without_state_update() {
         let _c = create_mock_client(|_| {});
-        let mut mock_entity = MockEntity::new();
-        mock_entity
+        let mut data_handler = MockHandlesData::new();
+        data_handler
             .expect_handle_command()
             .with(
                 predicate::eq("some/command"),
@@ -1209,17 +1207,13 @@ mod tests {
             .times(1);
         let mut device = make_empty_device();
         if log_enabled!(log::Level::Debug) {
-            let mut entity_type = MockAnEntityType::new();
+            let mut entity_type = MockAnEntity::new();
             entity_type.expect_details().return_const(
                 EntityDetails::new("dev1".to_string(), "Test Switch".to_string(), "mdi:switch".to_string())
                     .add_command("dev1/test_switch/command".to_string()),
             );
-            mock_entity
-                .expect_get_data()
-                .return_const(Box::new(entity_type))
-                .times(1 + if log_enabled!(log::Level::Trace) { 1 } else { 0 });
         }
-        device.entities.push(Box::new(mock_entity));
+        device.data_handlers.push(Box::new(data_handler));
         make_device_manager()
             .deal_with_command(
                 PublishResult {
@@ -1257,8 +1251,8 @@ mod tests {
                 .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
                 .times(1);
         });
-        let mut mock_entity = MockEntity::new();
-        mock_entity
+        let mut data_handler = MockHandlesData::new();
+        data_handler
             .expect_handle_command()
             .with(
                 predicate::eq("some/command"),
@@ -1275,18 +1269,14 @@ mod tests {
             })
             .times(1);
         if log_enabled!(log::Level::Debug) {
-            let mut entity_type = MockAnEntityType::new();
+            let mut entity_type = MockAnEntity::new();
             entity_type.expect_details().return_const(
                 EntityDetails::new("dev1".to_string(), "Test Switch".to_string(), "mdi:switch".to_string())
                     .add_command("dev1/test_switch/command".to_string()),
             );
-            mock_entity
-                .expect_get_data()
-                .return_const(Box::new(entity_type))
-                .times(1 + if log_enabled!(log::Level::Trace) { 1 } else { 0 });
         }
         let mut device = make_empty_device();
-        device.entities.push(Box::new(mock_entity));
+        device.data_handlers.push(Box::new(data_handler));
         make_device_manager()
             .deal_with_command(
                 PublishResult {
@@ -1338,8 +1328,8 @@ mod tests {
                 .times(1);
         });
 
-        let mut mock_entity = MockEntity::new();
-        mock_entity
+        let mut data_handler = MockHandlesData::new();
+        data_handler
             .expect_get_entity_data()
             .returning(|_| {
                 Box::pin(future::ready(Ok(
@@ -1348,7 +1338,7 @@ mod tests {
             })
             .times(1);
         let mut device = make_empty_device();
-        device.entities.push(Box::new(mock_entity));
+        device.data_handlers.push(Box::new(data_handler));
         let devices = Devices::new_from_single_device(device, CancellationToken::default());
 
         let manager = make_device_manager();

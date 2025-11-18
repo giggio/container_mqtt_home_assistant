@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 use crate::{
     cancellation_token::CancellationToken,
     device_manager::CommandResult,
-    devices::{Entity, Error},
+    devices::{Entity, Error, HandlesData},
 };
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -17,6 +17,7 @@ pub struct Device {
     pub details: DeviceDetails,
     pub origin: DeviceOrigin,
     pub entities: Vec<Box<dyn Entity>>,
+    pub data_handlers: Vec<Box<dyn HandlesData>>,
     pub availability_topic: String,
     pub metadata: Vec<Box<dyn Metadata>>,
     pub device_manager_id: String,
@@ -58,6 +59,7 @@ impl Device {
             details,
             origin,
             entities: vec![],
+            data_handlers: vec![],
             availability_topic,
             metadata: vec![],
             device_manager_id,
@@ -70,6 +72,7 @@ impl Device {
         origin: DeviceOrigin,
         availability_topic: String,
         entities: Vec<Box<dyn Entity>>,
+        data_handlers: Vec<Box<dyn HandlesData>>,
         device_manager_id: String,
         cancellation_token: CancellationToken,
     ) -> Self {
@@ -77,6 +80,7 @@ impl Device {
             details,
             origin,
             entities,
+            data_handlers,
             availability_topic,
             metadata: vec![],
             device_manager_id,
@@ -105,7 +109,7 @@ impl Device {
     pub fn command_topics(&self) -> Vec<String> {
         let mut all_command_topics = Vec::new();
         for entity in &self.entities {
-            let entity_details = entity.get_data().details();
+            let entity_details = entity.details();
             for command_topic in &entity_details.command_topics {
                 all_command_topics.push(command_topic.to_owned());
             }
@@ -123,8 +127,8 @@ impl Device {
 
     pub async fn get_entities_data(&self) -> Result<HashMap<String, String>> {
         let mut entities_data = HashMap::<String, String>::with_capacity(self.entities.len());
-        for entity in self.entities.iter() {
-            let provider_data = entity.get_entity_data(self.cancellation_token.clone()).await?;
+        for data_handler in self.data_handlers.iter() {
+            let provider_data = data_handler.get_entity_data(self.cancellation_token.clone()).await?;
             entities_data.extend(provider_data);
         }
         Ok(entities_data)
@@ -145,10 +149,7 @@ impl Device {
         });
         let mut entities_map = Map::new();
         for entity in &self.entities {
-            let entity_json = entity
-                .get_data()
-                .json_for_discovery(self, self.cancellation_token.clone())
-                .await?;
+            let entity_json = entity.json_for_discovery(self, self.cancellation_token.clone()).await?;
             if let Value::Object(entity_obj) = entity_json {
                 for (key, value) in entity_obj {
                     entities_map.insert(key, value);
@@ -166,28 +167,19 @@ impl Device {
     }
 
     pub async fn handle_command(&mut self, topic: &str, payload: &str) -> Result<CommandResult> {
-        for entity in self.entities.iter_mut() {
+        for data_handler in self.data_handlers.iter_mut() {
             trace!(
-                "Checking device handling command '{topic}' for device '{}' and entity: '{}'",
+                "Checking device handling command '{topic}' for device '{}'",
                 self.details.name,
-                entity.get_data().details().name
             );
-            let command_handle_result = entity
+            let command_handle_result = data_handler
                 .handle_command(topic, payload, self.cancellation_token.clone())
                 .await?;
             if command_handle_result.handled {
-                debug!(
-                    "Device '{}' handled command '{topic}' for entity: '{}'",
-                    self.details.name,
-                    entity.get_data().details().name
-                );
+                debug!("Device '{}' handled command '{topic}'", self.details.name);
                 return Ok(command_handle_result);
             } else {
-                trace!(
-                    "Entity '{}' did not handle command '{topic}' for device '{}'",
-                    entity.get_data().details().name,
-                    self.details.name
-                );
+                trace!("Did not handle command '{topic}' for device '{}'", self.details.name);
             }
         }
         Ok(CommandResult {
@@ -227,8 +219,9 @@ pub struct DeviceOrigin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::devices::EntityDetails;
+    use crate::devices::MockHandlesData;
     use crate::devices::test_helpers::*;
-    use crate::devices::{EntityDetails, MockEntity};
 
     use mockall::predicate;
     use pretty_assertions::assert_eq;
@@ -244,14 +237,12 @@ mod tests {
     #[test]
     fn test_device_command_topics_has_topic_when_has_entity() {
         let mut device = create_test_device();
-        let mut mock_entity_type = MockAnEntityType::new();
+        let mut mock_entity_type = MockAnEntity::new();
         mock_entity_type.expect_details().return_const(
             EntityDetails::new("dev1".to_string(), "Test Switch".to_string(), "mdi:switch".to_string())
                 .add_command("dev1/test_switch/command".to_string()),
         );
-        let mut mock_entity = MockEntity::new();
-        mock_entity.expect_get_data().return_const(Box::new(mock_entity_type));
-        device.entities.push(Box::new(mock_entity));
+        device.entities.push(Box::new(mock_entity_type));
 
         let topics = device.command_topics();
         assert_eq!(topics.len(), 1);
@@ -305,7 +296,7 @@ mod tests {
     #[tokio::test]
     async fn test_device_devices_data() {
         let mut device = create_test_device();
-        device.entities.push(Box::new(get_mock_entity()));
+        device.data_handlers.push(Box::new(get_mock_data_handler()));
         let data = device.get_entities_data().await.unwrap();
         assert_eq!(
             hashmap! { "dev1/test_name/state".to_string() => "test_state".to_string() },
@@ -317,24 +308,20 @@ mod tests {
     fn test_device_command_topics_multiple_entities() {
         let mut device = create_test_device();
 
-        let mut mock_entity_type1 = MockAnEntityType::new();
+        let mut mock_entity_type1 = MockAnEntity::new();
         mock_entity_type1.expect_details().return_const(
             EntityDetails::new("dev1".to_string(), "Switch 1".to_string(), "mdi:switch".to_string())
                 .add_command("dev1/switch1/command".to_string()),
         );
-        let mut mock_entity1 = MockEntity::new();
-        mock_entity1.expect_get_data().return_const(Box::new(mock_entity_type1));
-        device.entities.push(Box::new(mock_entity1));
+        device.entities.push(Box::new(mock_entity_type1));
 
-        let mut mock_entity_type2 = MockAnEntityType::new();
+        let mut mock_entity_type2 = MockAnEntity::new();
         mock_entity_type2.expect_details().return_const(
             EntityDetails::new("dev1".to_string(), "Switch 2".to_string(), "mdi:switch".to_string())
                 .add_command("dev1/switch2/command".to_string())
                 .add_command("dev1/switch2_brightness/command".to_string()),
         );
-        let mut mock_entity2 = MockEntity::new();
-        mock_entity2.expect_get_data().return_const(Box::new(mock_entity_type2));
-        device.entities.push(Box::new(mock_entity2));
+        device.entities.push(Box::new(mock_entity_type2));
 
         let topics = device.command_topics();
         assert_eq!(topics.len(), 3);
@@ -356,15 +343,8 @@ mod tests {
     async fn test_device_handle_command_with_handler() {
         let mut device = create_test_device();
 
-        let mut mock_entity_type = MockAnEntityType::new();
-        mock_entity_type.expect_details().return_const(EntityDetails::new(
-            "dev1".to_string(),
-            "Test Entity".to_string(),
-            "mdi:test".to_string(),
-        ));
-        let mut mock_entity = MockEntity::new();
-        mock_entity.expect_get_data().return_const(Box::new(mock_entity_type));
-        mock_entity
+        let mut data_handler = MockHandlesData::new();
+        data_handler
             .expect_handle_command()
             .with(
                 predicate::eq("test/topic"),
@@ -379,7 +359,7 @@ mod tests {
                     })
                 })
             });
-        device.entities.push(Box::new(mock_entity));
+        device.data_handlers.push(Box::new(data_handler));
 
         let result = device.handle_command("test/topic", "test_payload").await.unwrap();
         assert!(result.handled);

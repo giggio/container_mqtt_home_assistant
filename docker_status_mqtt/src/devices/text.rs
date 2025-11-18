@@ -5,7 +5,7 @@ use std::fmt::Debug;
 
 use crate::{
     cancellation_token::CancellationToken,
-    devices::{EntityDetails, EntityDetailsGetter, EntityType, Error, device::Device},
+    devices::{Entity, EntityDetails, EntityDetailsGetter, Error, device::Device},
 };
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -44,7 +44,7 @@ impl Text {
 }
 
 #[async_trait]
-impl EntityType for Text {
+impl Entity for Text {
     async fn json_for_discovery<'a>(
         &'a self,
         device: &'a Device,

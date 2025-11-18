@@ -5,9 +5,8 @@ use bollard::{
         RemoveContainerOptionsBuilder, RestartContainerOptionsBuilder, StartContainerOptionsBuilder,
         StatsOptionsBuilder, StopContainerOptionsBuilder,
     },
-    secret::{ContainerStatsResponse, ContainerSummary},
+    secret::{ContainerCpuStats, ContainerStatsResponse, ContainerSummary},
 };
-use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use hashbrown::{HashMap, HashSet};
 use std::{
@@ -20,13 +19,11 @@ use crate::{
     cancellation_token::CancellationToken,
     device_manager::CommandResult,
     devices::{
-        Button, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, Entity, EntityDetails,
-        EntityDetailsGetter, EntityType, Sensor,
+        Button, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, EntityDetails, EntityDetailsGetter,
+        HandlesData, Sensor,
     },
     helpers::*,
 };
-
-pub type UtcDateTime = DateTime<chrono::Utc>;
 
 const HOST_DEVICE_METADATA: &str = "host_device";
 
@@ -93,13 +90,77 @@ impl DockerDeviceProvider {
                 .trim_start_matches('/')
                 .to_string();
             let device_identifier = slugify(&container_name);
-            let stats_cache = Arc::new(RwLock::new((
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-            )));
             let should_get_logs = Arc::new(AtomicBool::new(false));
+            let log_text = Box::new(Sensor::new_simple(
+                device_identifier.clone(),
+                "Logs",
+                "mdi:script-text-outline",
+            ));
+            let log_text_data = Box::new(LogText {
+                state_topic: log_text.details().get_topic_for_state(None),
+                docker: self.docker.clone(),
+                container_name: container_name.clone(),
+                should_get_logs: should_get_logs.clone(),
+            });
+            let get_logs_button = Box::new(Button::new(
+                &device_identifier,
+                "Get Logs",
+                "mdi:script-text-play-outline",
+            ));
+            let get_logs_button_data = Box::new(GetLogsButton {
+                command_topic: get_logs_button.details().get_topic_for_command(None),
+                should_get_logs,
+            });
+            let used_memory = Box::new(Sensor::new(
+                &device_identifier,
+                "Used Memory",
+                "mdi:memory",
+                "KiB",
+                "data_size",
+            ));
+            let used_cpus = Box::new(Sensor::new_with_details(
+                EntityDetails::new(&device_identifier, "Used CPUs", "mdi:chip"),
+                Some("%".to_string()),
+                None,
+            ));
+            let container_stats_data = Box::new(ContainerStats {
+                used_cpu_state_topic: used_cpus.details().get_topic_for_state(None),
+                used_memory_state_topic: used_memory.details().get_topic_for_state(None),
+                docker: self.docker.clone(),
+                container_name: container_name.clone(),
+                last_cpu_stats: Arc::new(RwLock::new(None)),
+            });
+            let container_status: Box<Sensor> = EntityDetails::new_without_icon(&device_identifier, "Status").into();
+            let container_status_data = Box::new(ContainerStatus {
+                state_topic: container_status.details().get_topic_for_state(None),
+                docker: self.docker.clone(),
+                container_name: container_name.clone(),
+                cancellation_token: cancellation_token.clone(),
+            });
+            let restart_button = Box::new(Button::new(&device_identifier, "Restart", "mdi:restart"));
+            let restart_button_data = Box::new(RestartButton {
+                command_topic: restart_button.details().get_topic_for_command(None),
+                docker: self.docker.clone(),
+                container_name: container_name.clone(),
+            });
+            let start_button = Box::new(Button::new(&device_identifier, "Start", "mdi:play"));
+            let start_button_data = Box::new(StartButton {
+                command_topic: start_button.details().get_topic_for_command(None),
+                docker: self.docker.clone(),
+                container_name: container_name.clone(),
+            });
+            let stop_button = Box::new(Button::new(&device_identifier, "Stop", "mdi:stop"));
+            let stop_button_data = Box::new(StopButton {
+                command_topic: stop_button.details().get_topic_for_command(None),
+                docker: self.docker.clone(),
+                container_name: container_name.clone(),
+            });
+            let remove_button = Box::new(Button::new(&device_identifier, "Remove", "mdi:delete"));
+            let remove_button_data = Box::new(RemoveButton {
+                command_topic: remove_button.details().get_topic_for_command(None),
+                docker: self.docker.clone(),
+                container_name: container_name.clone(),
+            });
             let container_device = Device::new_with_entities(
                 DeviceDetails {
                     name: container_name.clone(),
@@ -115,72 +176,25 @@ impl DockerDeviceProvider {
                 },
                 availability_topic.clone(),
                 vec![
-                    Box::new(LogText {
-                        device_information: Box::new(Sensor::new_simple(
-                            device_identifier.clone(),
-                            "Logs",
-                            "mdi:script-text-outline",
-                        )),
-                        docker: self.docker.clone(),
-                        container_name: container_name.clone(),
-                        should_get_logs: should_get_logs.clone(),
-                    }),
-                    Box::new(GetLogsButton {
-                        device_information: Box::new(Button::new(
-                            &device_identifier,
-                            "Get Logs",
-                            "mdi:script-text-play-outline",
-                        )),
-                        should_get_logs,
-                    }),
-                    Box::new(UsedMemory {
-                        device_information: Box::new(Sensor::new(
-                            &device_identifier,
-                            "Used Memory",
-                            "mdi:memory",
-                            "KiB",
-                            "data_size",
-                        )),
-                        docker: self.docker.clone(),
-                        container_name: container_name.clone(),
-                        stats_cache: stats_cache.clone(),
-                    }),
-                    Box::new(UsedCPUs {
-                        device_information: Box::new(Sensor::new_with_details(
-                            EntityDetails::new(&device_identifier, "Used CPUs", "mdi:chip"),
-                            Some("%".to_string()),
-                            None,
-                        )),
-                        docker: self.docker.clone(),
-                        container_name: container_name.clone(),
-                        stats_cache: stats_cache.clone(),
-                    }),
-                    Box::new(ContainerStatus {
-                        device_information: EntityDetails::new_without_icon(&device_identifier, "Status").into(),
-                        docker: self.docker.clone(),
-                        container_name: container_name.clone(),
-                        cancellation_token: cancellation_token.clone(),
-                    }),
-                    Box::new(RestartButton {
-                        device_information: Box::new(Button::new(&device_identifier, "Restart", "mdi:restart")),
-                        docker: self.docker.clone(),
-                        container_name: container_name.clone(),
-                    }),
-                    Box::new(StartButton {
-                        device_information: Box::new(Button::new(&device_identifier, "Start", "mdi:play")),
-                        docker: self.docker.clone(),
-                        container_name: container_name.clone(),
-                    }),
-                    Box::new(StopButton {
-                        device_information: Box::new(Button::new(&device_identifier, "Stop", "mdi:stop")),
-                        docker: self.docker.clone(),
-                        container_name: container_name.clone(),
-                    }),
-                    Box::new(RemoveButton {
-                        device_information: Box::new(Button::new(&device_identifier, "Remove", "mdi:delete")),
-                        docker: self.docker.clone(),
-                        container_name: container_name.clone(),
-                    }),
+                    log_text,
+                    get_logs_button,
+                    used_memory,
+                    used_cpus,
+                    container_status,
+                    restart_button,
+                    start_button,
+                    stop_button,
+                    remove_button,
+                ],
+                vec![
+                    log_text_data,
+                    get_logs_button_data,
+                    container_stats_data,
+                    container_status_data,
+                    restart_button_data,
+                    start_button_data,
+                    stop_button_data,
+                    remove_button_data,
                 ],
                 self.id(),
                 cancellation_token.clone(),
@@ -207,6 +221,15 @@ impl DeviceProvider for DockerDeviceProvider {
             .await?;
         // todo: improve device for the docker host
         let host_identifier = slugify(&self.provider_name);
+        let number_of_containers = Box::new(Sensor::new_simple(
+            host_identifier.clone(),
+            "Total containers",
+            "mdi:truck-cargo-container",
+        ));
+        let number_of_containers_data = Box::new(NumberOfContainers {
+            state_topic: number_of_containers.details().get_topic_for_command(None),
+            docker: self.docker.clone(),
+        });
         let host_device = Device::new_with_entities(
             DeviceDetails {
                 name: self.provider_name.clone(),
@@ -221,14 +244,8 @@ impl DeviceProvider for DockerDeviceProvider {
                 url: "https://github.com/giggio/docker-status-mqtt".to_string(),
             },
             availability_topic.clone(),
-            vec![Box::new(NumberOfContainers {
-                device_information: Box::new(Sensor::new_simple(
-                    host_identifier.clone(),
-                    "Total containers",
-                    "mdi:truck-cargo-container",
-                )),
-                docker: self.docker.clone(),
-            })],
+            vec![number_of_containers],
+            vec![number_of_containers_data],
             self.id(),
             cancellation_token.clone(),
         )
@@ -330,18 +347,15 @@ impl DeviceProvider for DockerDeviceProvider {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct LogText {
-    device_information: Box<Sensor>,
+    state_topic: String,
     docker: Docker,
     container_name: String,
     should_get_logs: Arc<AtomicBool>,
 }
 #[async_trait]
-impl Entity for LogText {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
-    }
+impl HandlesData for LogText {
     async fn get_entity_data(
         &self,
         _cancellation_token: CancellationToken,
@@ -362,19 +376,19 @@ impl Entity for LogText {
             .collect::<Vec<String>>()
             .join("\n");
         logs.truncate(255);
-        Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => logs})
+        Ok(hashmap! {self.state_topic.clone() => logs})
     }
 }
 
 #[derive(Debug)]
 struct GetLogsButton {
-    device_information: Box<Button>,
+    command_topic: String,
     should_get_logs: Arc<AtomicBool>,
 }
 #[async_trait]
-impl Entity for GetLogsButton {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
+impl HandlesData for GetLogsButton {
+    fn get_command_topics(&self) -> Vec<&str> {
+        vec![&self.command_topic]
     }
     async fn do_handle_command(
         &mut self,
@@ -382,10 +396,7 @@ impl Entity for GetLogsButton {
         _payload: &str,
         _cancellation_token: CancellationToken,
     ) -> crate::devices::Result<CommandResult> {
-        trace!(
-            "RestartButton received entity {} event for topic {topic}",
-            self.device_information.details().name,
-        );
+        trace!("RestartButton received event for topic {topic}");
         self.should_get_logs.store(true, std::sync::atomic::Ordering::SeqCst);
         return Ok(CommandResult {
             handled: true,
@@ -396,14 +407,11 @@ impl Entity for GetLogsButton {
 
 #[derive(Debug)]
 struct NumberOfContainers {
-    device_information: Box<Sensor>,
+    state_topic: String,
     docker: Docker,
 }
 #[async_trait]
-impl Entity for NumberOfContainers {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
-    }
+impl HandlesData for NumberOfContainers {
     async fn get_entity_data(
         &self,
         _cancellation_token: CancellationToken,
@@ -413,22 +421,19 @@ impl Entity for NumberOfContainers {
             .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build()))
             .await?
             .len();
-        Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => count.to_string()})
+        Ok(hashmap! {self.state_topic.clone() => count.to_string()})
     }
 }
 
 #[derive(Debug)]
 struct ContainerStatus {
-    device_information: Box<Sensor>,
+    state_topic: String,
     docker: Docker,
     container_name: String,
     cancellation_token: CancellationToken,
 }
 #[async_trait]
-impl Entity for ContainerStatus {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
-    }
+impl HandlesData for ContainerStatus {
     async fn get_entity_data(
         &self,
         _cancellation_token: CancellationToken,
@@ -440,131 +445,95 @@ impl Entity for ContainerStatus {
                 Some(InspectContainerOptionsBuilder::new().build()),
             ))
             .await??;
-        Ok(
-            hashmap! {self.device_information.details().get_topic_for_state(None) => inspect.state.unwrap().status.unwrap().to_string()},
-        )
+        Ok(hashmap! {self.state_topic.clone() => inspect.state.unwrap().status.unwrap().to_string()})
     }
 }
 
 #[derive(Debug)]
-struct UsedCPUs {
-    device_information: Box<Sensor>,
+struct ContainerStats {
+    used_memory_state_topic: String,
+    used_cpu_state_topic: String,
     docker: Docker,
     container_name: String,
-    stats_cache: Arc<RwLock<(UtcDateTime, ContainerStatsResponse, UtcDateTime, ContainerStatsResponse)>>,
+    last_cpu_stats: Arc<RwLock<Option<ContainerCpuStats>>>,
 }
-#[async_trait]
-impl Entity for UsedCPUs {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
-    }
-    async fn get_entity_data(
-        &self,
-        _cancellation_token: CancellationToken,
-    ) -> crate::devices::Result<HashMap<String, String>> {
-        let stats = get_container_stats(self.stats_cache.clone(), &self.docker, &self.container_name, true).await?;
-        if stats.is_none() {
-            return Ok(HashMap::new());
-        }
-        let (stat, previous_stat) = stats.unwrap();
-        if let Some(cpu_stats) = stat.cpu_stats
-            && let Some(cpu_usage) = cpu_stats.cpu_usage
-            && let Some(total_usage) = cpu_usage.total_usage
-            && let Some(system_cpu_usage) = cpu_stats.system_cpu_usage
-            && let Some(online_cpus) = cpu_stats.online_cpus
-            && let Some(previous_cpu_stats) = previous_stat.cpu_stats
-            && let Some(previous_cpu_usage) = previous_cpu_stats.cpu_usage
-            && let Some(previous_total_usage) = previous_cpu_usage.total_usage
-            && let Some(previous_system_cpu_usage) = previous_cpu_stats.system_cpu_usage
-        {
-            let cpu_delta = total_usage.saturating_sub(previous_total_usage) as f64;
-            let system_cpu_delta = system_cpu_usage.saturating_sub(previous_system_cpu_usage) as f64;
-            if system_cpu_delta == 0.0 || cpu_delta == 0.0 {
-                return Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => "0".to_string()});
+impl ContainerStats {
+    async fn get_cpu(&self, stat: &ContainerStatsResponse) -> Result<Option<String>> {
+        if let Some(cpu_stats) = &stat.cpu_stats {
+            let mut last_cpu_stats_guard = self.last_cpu_stats.write().await;
+            let last_cpu_stats_option = (*last_cpu_stats_guard).take();
+            *last_cpu_stats_guard = Some(cpu_stats.clone());
+            drop(last_cpu_stats_guard);
+            if let Some(last_cpu_stats) = last_cpu_stats_option {
+                if let Some(cpu_usage) = &cpu_stats.cpu_usage
+                    && let Some(total_usage) = cpu_usage.total_usage
+                    && let Some(system_cpu_usage) = cpu_stats.system_cpu_usage
+                    && let Some(online_cpus) = cpu_stats.online_cpus
+                    && let Some(last_cpu_usage) = last_cpu_stats.cpu_usage
+                    && let Some(last_total_usage) = last_cpu_usage.total_usage
+                    && let Some(last_system_cpu_usage) = last_cpu_stats.system_cpu_usage
+                {
+                    let cpu_delta = total_usage.saturating_sub(last_total_usage) as f64;
+                    let system_cpu_delta = system_cpu_usage.saturating_sub(last_system_cpu_usage) as f64;
+                    if system_cpu_delta == 0.0 || cpu_delta == 0.0 {
+                        return Ok(Some("0".to_string()));
+                    }
+                    let total_usage = (100.0 * cpu_delta / system_cpu_delta) * online_cpus as f64;
+                    Ok(Some(format!("{total_usage:.2}")))
+                } else {
+                    Err(Error::NoStats)
+                }
+            } else {
+                Ok(None)
             }
-            let total_usage = (100.0 * cpu_delta / system_cpu_delta) * online_cpus as f64;
-            Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => format!("{total_usage:.2}")})
         } else {
-            Err(Error::NoStats.into())
+            Err(Error::NoStats)
         }
     }
-}
-
-#[derive(Debug)]
-struct UsedMemory {
-    device_information: Box<Sensor>,
-    docker: Docker,
-    container_name: String,
-    stats_cache: Arc<RwLock<(UtcDateTime, ContainerStatsResponse, UtcDateTime, ContainerStatsResponse)>>,
-}
-#[async_trait]
-impl Entity for UsedMemory {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
-    }
-    async fn get_entity_data(
-        &self,
-        _cancellation_token: CancellationToken,
-    ) -> crate::devices::Result<HashMap<String, String>> {
-        let stats = get_container_stats(self.stats_cache.clone(), &self.docker, &self.container_name, false).await?;
-        if stats.is_none() {
-            return Ok(HashMap::new());
-        }
-        let (stat, _) = stats.unwrap();
-        let memory_stats = stat.memory_stats;
-        if let Some(used_memory) = memory_stats
+    fn get_memory(&self, stat: &ContainerStatsResponse) -> Result<String> {
+        if let Some(used_memory) = &stat.memory_stats
             && let Some(usage) = used_memory.usage
         {
-            Ok(hashmap! {self.device_information.details().get_topic_for_state(None) => (usage / 1024).to_string()})
+            Ok((usage / 1024).to_string())
         } else {
-            Err(Error::NoStats.into())
+            Err(Error::NoStats)
         }
     }
 }
-async fn get_container_stats(
-    stats_cache: Arc<RwLock<(UtcDateTime, ContainerStatsResponse, UtcDateTime, ContainerStatsResponse)>>,
-    docker: &Docker,
-    container_name: &str,
-    delta: bool,
-) -> Result<Option<(ContainerStatsResponse, ContainerStatsResponse)>> {
-    let stats_cache_guard = stats_cache.read().await;
-    let (last_stats_time, cache, previous_stats_time, previous_cache) = &*stats_cache_guard;
-    if Utc::now().signed_duration_since(last_stats_time).num_seconds().abs() > 10 {
-        let (last_stats_time, cache) = (*last_stats_time, cache.clone());
-        drop(stats_cache_guard);
-        let stats_stream = docker.stats(
-            container_name,
+#[async_trait]
+impl HandlesData for ContainerStats {
+    async fn get_entity_data(
+        &self,
+        _cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<HashMap<String, String>> {
+        let stats_stream = self.docker.stats(
+            &self.container_name,
             Some(StatsOptionsBuilder::new().stream(false).one_shot(true).build()),
         );
         let stats = stats_stream.try_collect::<Vec<_>>().await?;
         if stats.is_empty() {
-            return Err(Error::NoStats);
+            return Err(Error::NoStats.into());
         }
         let stat = stats.into_iter().next().unwrap();
-        let mut stats_cache_guard = stats_cache.write().await;
-        *stats_cache_guard = (Utc::now(), stat.clone(), last_stats_time, cache.clone());
-        if delta && last_stats_time == UtcDateTime::MIN_UTC {
-            Ok(None)
-        } else {
-            Ok(Some((stat, cache)))
-        }
-    } else if delta && *previous_stats_time == UtcDateTime::MIN_UTC {
-        Ok(None)
-    } else {
-        Ok(Some((cache.clone(), previous_cache.clone())))
+        let used_memory = self.get_memory(&stat)?;
+        let used_cpu = self.get_cpu(&stat).await?;
+        Ok(hashmap! {
+            self.used_memory_state_topic.clone() => used_memory,
+            self.used_cpu_state_topic.clone() => used_cpu.unwrap_or("".to_string())
+        })
     }
 }
 
 #[derive(Debug)]
 struct RestartButton {
-    device_information: Box<Button>,
+    command_topic: String,
     docker: Docker,
     container_name: String,
 }
 #[async_trait]
-impl Entity for RestartButton {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
+impl HandlesData for RestartButton {
+    fn get_command_topics(&self) -> Vec<&str> {
+        vec![&self.command_topic]
     }
     async fn do_handle_command(
         &mut self,
@@ -572,10 +541,7 @@ impl Entity for RestartButton {
         _payload: &str,
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<CommandResult> {
-        trace!(
-            "RestartButton received entity {} event for topic {topic}",
-            self.device_information.details().name,
-        );
+        trace!("RestartButton received event for topic {topic}");
         cancellation_token
             .wait_on(self.docker.restart_container(
                 &self.container_name,
@@ -591,14 +557,14 @@ impl Entity for RestartButton {
 
 #[derive(Debug)]
 struct StartButton {
-    device_information: Box<Button>,
+    command_topic: String,
     docker: Docker,
     container_name: String,
 }
 #[async_trait]
-impl Entity for StartButton {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
+impl HandlesData for StartButton {
+    fn get_command_topics(&self) -> Vec<&str> {
+        vec![&self.command_topic]
     }
     async fn do_handle_command(
         &mut self,
@@ -606,10 +572,7 @@ impl Entity for StartButton {
         _payload: &str,
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<CommandResult> {
-        trace!(
-            "StartButton received entity {} event for topic {topic}",
-            self.device_information.details().name,
-        );
+        trace!("StartButton received event for topic {topic}");
         cancellation_token
             .wait_on(
                 self.docker
@@ -625,14 +588,14 @@ impl Entity for StartButton {
 
 #[derive(Debug)]
 struct StopButton {
-    device_information: Box<Button>,
+    command_topic: String,
     docker: Docker,
     container_name: String,
 }
 #[async_trait]
-impl Entity for StopButton {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
+impl HandlesData for StopButton {
+    fn get_command_topics(&self) -> Vec<&str> {
+        vec![&self.command_topic]
     }
     async fn do_handle_command(
         &mut self,
@@ -640,10 +603,7 @@ impl Entity for StopButton {
         _payload: &str,
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<CommandResult> {
-        trace!(
-            "StopButton received entity {} event for topic {topic}",
-            self.device_information.details().name,
-        );
+        trace!("StopButton received event for topic {topic}");
         cancellation_token
             .wait_on(self.docker.stop_container(
                 &self.container_name,
@@ -659,14 +619,14 @@ impl Entity for StopButton {
 
 #[derive(Debug)]
 struct RemoveButton {
-    device_information: Box<Button>,
+    command_topic: String,
     docker: Docker,
     container_name: String,
 }
 #[async_trait]
-impl Entity for RemoveButton {
-    fn get_data(&self) -> &dyn EntityType {
-        self.device_information.as_ref()
+impl HandlesData for RemoveButton {
+    fn get_command_topics(&self) -> Vec<&str> {
+        vec![&self.command_topic]
     }
     async fn do_handle_command(
         &mut self,
@@ -674,10 +634,7 @@ impl Entity for RemoveButton {
         _payload: &str,
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<CommandResult> {
-        trace!(
-            "RemoveButton received entity {} event for topic {topic}",
-            self.device_information.details().name,
-        );
+        trace!("RemoveButton received event for topic {topic}");
         cancellation_token
             .wait_on(self.docker.stop_container(
                 &self.container_name,
@@ -737,7 +694,11 @@ pub mod docker_client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bollard::{container::LogOutput, models::ContainerSummary, secret::ContainerMemoryStats};
+    use bollard::{
+        container::LogOutput,
+        models::ContainerSummary,
+        secret::{ContainerCpuStats, ContainerCpuUsage, ContainerMemoryStats},
+    };
     use docker_client::MockDocker;
     use futures::stream;
     use pretty_assertions::assert_eq;
@@ -762,7 +723,7 @@ mod tests {
         });
 
         let log_text = LogText {
-            device_information: Box::new(Sensor::new_simple("test_container", "Log", "mdi:script-text-outline")),
+            state_topic: "test_container/log/state".to_string(),
             docker: mock_docker,
             container_name: "test_container".to_string(),
             should_get_logs: Arc::new(AtomicBool::new(true)),
@@ -788,11 +749,7 @@ mod tests {
             .returning(|_, _| Box::pin(stream::iter(vec![])));
 
         let log_text = LogText {
-            device_information: Box::new(Sensor::new_simple(
-                "test_container".to_string(),
-                "Log".to_string(),
-                "mdi:script-text-outline".to_string(),
-            )),
+            state_topic: "test_container/log/state".to_string(),
             docker: mock_docker,
             container_name: "test_container".to_string(),
             should_get_logs: Arc::new(AtomicBool::new(true)),
@@ -814,11 +771,7 @@ mod tests {
             .returning(|_, _| Box::pin(stream::iter(vec![])));
 
         let log_text = LogText {
-            device_information: Box::new(Sensor::new_simple(
-                "test_container".to_string(),
-                "Log".to_string(),
-                "mdi:script-text-outline".to_string(),
-            )),
+            state_topic: "test_container/log/state".to_string(),
             docker: mock_docker,
             container_name: "test_container".to_string(),
             should_get_logs: Arc::new(AtomicBool::new(false)),
@@ -846,11 +799,7 @@ mod tests {
             .returning(move |_| Ok(containers.clone()));
 
         let number_of_containers = NumberOfContainers {
-            device_information: Box::new(Sensor::new_simple(
-                "docker_host".to_string(),
-                "Total containers".to_string(),
-                "mdi:truck-cargo-container".to_string(),
-            )),
+            state_topic: "docker_host/total_containers/state".to_string(),
             docker: mock_docker,
         };
 
@@ -872,11 +821,7 @@ mod tests {
         mock_docker.expect_list_containers().returning(|_| Ok(vec![]));
 
         let number_of_containers = NumberOfContainers {
-            device_information: Box::new(Sensor::new_simple(
-                "docker_host".to_string(),
-                "Total containers".to_string(),
-                "mdi:truck-cargo-container".to_string(),
-            )),
+            state_topic: "docker_host/total_containers/state".to_string(),
             docker: mock_docker,
         };
 
@@ -891,7 +836,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_used_memory_get_entity_data_success() {
+    async fn test_container_stats_get_entity_data_success_for_memory_cpu_empty() {
         let mut mock_docker = MockDocker::new();
 
         mock_docker.expect_stats().returning(|_, _| {
@@ -900,60 +845,112 @@ mod tests {
                     usage: Some(1073741824),
                     ..ContainerMemoryStats::default()
                 }),
+                cpu_stats: Some(ContainerCpuStats {
+                    cpu_usage: Some(ContainerCpuUsage {
+                        total_usage: Some(4000000000),
+                        ..ContainerCpuUsage::default()
+                    }),
+                    system_cpu_usage: Some(30000000000),
+                    online_cpus: Some(2),
+                    ..ContainerCpuStats::default()
+                }),
                 ..ContainerStatsResponse::default()
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
 
-        let used_memory = UsedMemory {
-            device_information: Box::new(Sensor::new_simple(
-                "test_container".to_string(),
-                "Used Memory".to_string(),
-                "mdi:memory".to_string(),
-            )),
+        let container_stats = ContainerStats {
+            used_memory_state_topic: "test_container/used_memory/state".to_string(),
+            used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
             docker: mock_docker,
             container_name: "test_container".to_string(),
-            stats_cache: Arc::new(RwLock::new((
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-            ))),
+            last_cpu_stats: Arc::new(RwLock::new(None)),
         };
 
-        let data = used_memory.get_entity_data(CancellationToken::default()).await.unwrap();
+        let data = container_stats
+            .get_entity_data(CancellationToken::default())
+            .await
+            .unwrap();
 
-        assert_eq!(data.len(), 1);
-        let topic = "test_container/used_memory/state";
-        assert!(data.contains_key(topic));
-        assert_eq!(data.get(topic).unwrap(), &(1073741824 / 1024).to_string());
+        assert_eq!(data.len(), 2);
+        let memory_topic = "test_container/used_memory/state";
+        assert!(data.contains_key(memory_topic));
+        assert_eq!(data.get(memory_topic).unwrap(), &(1073741824 / 1024).to_string());
+        let cpu_topic = "test_container/used_cpu/state";
+        assert!(data.contains_key(cpu_topic));
+        assert_eq!(data.get(cpu_topic).unwrap(), "");
     }
 
     #[tokio::test]
-    async fn test_used_memory_get_entity_data_no_stats() {
+    async fn test_container_stats_get_entity_data_success_for_memory_and_cpu() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker.expect_stats().returning(|_, _| {
+            let stats = ContainerStatsResponse {
+                memory_stats: Some(ContainerMemoryStats {
+                    usage: Some(1073741824),
+                    ..ContainerMemoryStats::default()
+                }),
+                cpu_stats: Some(ContainerCpuStats {
+                    cpu_usage: Some(ContainerCpuUsage {
+                        total_usage: Some(4000000000),
+                        ..ContainerCpuUsage::default()
+                    }),
+                    system_cpu_usage: Some(30000000000),
+                    online_cpus: Some(2),
+                    ..ContainerCpuStats::default()
+                }),
+                ..ContainerStatsResponse::default()
+            };
+            Box::pin(stream::iter(vec![Ok(stats)]))
+        });
+
+        let container_stats = ContainerStats {
+            used_memory_state_topic: "test_container/used_memory/state".to_string(),
+            used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
+            docker: mock_docker,
+            container_name: "test_container".to_string(),
+            last_cpu_stats: Arc::new(RwLock::new(Some(ContainerCpuStats {
+                cpu_usage: Some(ContainerCpuUsage {
+                    total_usage: Some(1000000000),
+                    ..ContainerCpuUsage::default()
+                }),
+                system_cpu_usage: Some(10000000000),
+                online_cpus: Some(2),
+                ..ContainerCpuStats::default()
+            }))),
+        };
+
+        let data = container_stats
+            .get_entity_data(CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert_eq!(data.len(), 2);
+        assert_eq!(
+            data.get("test_container/used_memory/state").unwrap(),
+            &(1073741824 / 1024).to_string()
+        );
+        assert_eq!(data.get("test_container/used_cpu/state").unwrap(), "30.00");
+    }
+
+    #[tokio::test]
+    async fn test_container_stats_get_entity_data_no_stats() {
         let mut mock_docker = MockDocker::new();
 
         mock_docker
             .expect_stats()
             .returning(|_, _| Box::pin(stream::iter(vec![])));
 
-        let used_memory = UsedMemory {
-            device_information: Box::new(Sensor::new_simple(
-                "test_container".to_string(),
-                "Used Memory".to_string(),
-                "mdi:memory".to_string(),
-            )),
+        let container_stats = ContainerStats {
+            used_memory_state_topic: "test_container/used_memory/state".to_string(),
+            used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
             docker: mock_docker,
             container_name: "test_container".to_string(),
-            stats_cache: Arc::new(RwLock::new((
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-            ))),
+            last_cpu_stats: Arc::new(RwLock::new(None)),
         };
 
-        let result = used_memory.get_entity_data(CancellationToken::default()).await;
+        let result = container_stats.get_entity_data(CancellationToken::default()).await;
 
         assert!(result.is_err());
         let err_string = result.unwrap_err().to_string();
@@ -961,7 +958,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_used_memory_get_entity_data_no_memory_stats() {
+    async fn test_container_stats_get_entity_data_no_memory_stats() {
         let mut mock_docker = MockDocker::new();
 
         mock_docker.expect_stats().returning(|_, _| {
@@ -972,23 +969,15 @@ mod tests {
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
 
-        let used_memory = UsedMemory {
-            device_information: Box::new(Sensor::new_simple(
-                "test_container".to_string(),
-                "Used Memory".to_string(),
-                "mdi:memory".to_string(),
-            )),
+        let container_stats = ContainerStats {
+            used_memory_state_topic: "test_container/used_memory/state".to_string(),
+            used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
             docker: mock_docker,
             container_name: "test_container".to_string(),
-            stats_cache: Arc::new(RwLock::new((
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-            ))),
+            last_cpu_stats: Arc::new(RwLock::new(None)),
         };
 
-        let result = used_memory.get_entity_data(CancellationToken::default()).await;
+        let result = container_stats.get_entity_data(CancellationToken::default()).await;
 
         assert!(result.is_err());
         let err_string = result.unwrap_err().to_string();
@@ -996,7 +985,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_used_memory_get_entity_data_no_usage() {
+    async fn test_container_stats_get_entity_data_no_usage() {
         let mut mock_docker = MockDocker::new();
 
         mock_docker.expect_stats().returning(|_, _| {
@@ -1010,23 +999,15 @@ mod tests {
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
 
-        let used_memory = UsedMemory {
-            device_information: Box::new(Sensor::new_simple(
-                "test_container".to_string(),
-                "Used Memory".to_string(),
-                "mdi:memory".to_string(),
-            )),
+        let container_stats = ContainerStats {
+            used_memory_state_topic: "test_container/used_memory/state".to_string(),
+            used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
             docker: mock_docker,
             container_name: "test_container".to_string(),
-            stats_cache: Arc::new(RwLock::new((
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-            ))),
+            last_cpu_stats: Arc::new(RwLock::new(None)),
         };
 
-        let result = used_memory.get_entity_data(CancellationToken::default()).await;
+        let result = container_stats.get_entity_data(CancellationToken::default()).await;
 
         assert!(result.is_err());
         let err_string = result.unwrap_err().to_string();
@@ -1034,7 +1015,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_used_memory_get_entity_data_zero_usage() {
+    async fn test_container_stats_get_entity_data_zero_usage() {
         let mut mock_docker = MockDocker::new();
 
         mock_docker.expect_stats().returning(|_, _| {
@@ -1043,32 +1024,36 @@ mod tests {
                     usage: Some(0),
                     ..ContainerMemoryStats::default()
                 }),
+                cpu_stats: Some(ContainerCpuStats {
+                    cpu_usage: Some(ContainerCpuUsage {
+                        total_usage: Some(4000000000),
+                        ..ContainerCpuUsage::default()
+                    }),
+                    system_cpu_usage: Some(30000000000),
+                    online_cpus: Some(2),
+                    ..ContainerCpuStats::default()
+                }),
                 ..ContainerStatsResponse::default()
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
 
-        let used_memory = UsedMemory {
-            device_information: Box::new(Sensor::new_simple(
-                "test_container".to_string(),
-                "Used Memory".to_string(),
-                "mdi:memory".to_string(),
-            )),
+        let container_stats = ContainerStats {
+            used_memory_state_topic: "test_container/used_memory/state".to_string(),
+            used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
             docker: mock_docker,
             container_name: "test_container".to_string(),
-            stats_cache: Arc::new(RwLock::new((
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-                UtcDateTime::MIN_UTC,
-                ContainerStatsResponse::default(),
-            ))),
+            last_cpu_stats: Arc::new(RwLock::new(None)),
         };
 
-        let data = used_memory.get_entity_data(CancellationToken::default()).await.unwrap();
+        let data = container_stats
+            .get_entity_data(CancellationToken::default())
+            .await
+            .unwrap();
 
-        assert_eq!(data.len(), 1);
-        let topic = "test_container/used_memory/state";
-        assert_eq!(data.get(topic).unwrap(), "0");
+        assert_eq!(data.len(), 2);
+        assert_eq!(data.get("test_container/used_memory/state").unwrap(), "0");
+        assert_eq!(data.get("test_container/used_cpu/state").unwrap(), "");
     }
 
     #[tokio::test]
@@ -1106,14 +1091,12 @@ mod tests {
                         url: "https://github.com/giggio/docker-status-mqtt".to_string(),
                     },
                     "availability/topic".to_string(),
-                    vec![Box::new(NumberOfContainers {
-                        device_information: Box::new(Sensor::new_simple(
-                            host_identifier.clone(),
-                            "Total containers",
-                            "mdi:truck-cargo-container",
-                        )),
-                        docker: MockDocker::default(),
-                    })],
+                    vec![Box::new(Sensor::new_simple(
+                        host_identifier.clone(),
+                        "Total containers",
+                        "mdi:truck-cargo-container",
+                    ))],
+                    vec![],
                     "docker_device_provider".to_string(),
                     CancellationToken::default(),
                 )
@@ -1132,16 +1115,12 @@ mod tests {
                         url: "x".to_string(),
                     },
                     "availability/topic".to_string(),
-                    vec![Box::new(LogText {
-                        device_information: Box::new(Sensor::new_simple(
-                            "container1".to_string(),
-                            "Log".to_string(),
-                            "mdi:script-text-outline".to_string(),
-                        )),
-                        docker: MockDocker::default(),
-                        container_name: "container1".to_string(),
-                        should_get_logs: Arc::new(AtomicBool::new(false)),
-                    })],
+                    vec![Box::new(Sensor::new_simple(
+                        "container1".to_string(),
+                        "Log".to_string(),
+                        "mdi:script-text-outline".to_string(),
+                    ))],
+                    vec![],
                     "docker_device_provider".to_string(),
                     CancellationToken::default(),
                 ),
