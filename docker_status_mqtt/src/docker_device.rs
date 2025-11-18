@@ -5,7 +5,7 @@ use bollard::{
         RemoveContainerOptionsBuilder, RestartContainerOptionsBuilder, StartContainerOptionsBuilder,
         StatsOptionsBuilder, StopContainerOptionsBuilder,
     },
-    secret::{ContainerCpuStats, ContainerStatsResponse, ContainerSummary},
+    secret::{ContainerCpuStats, ContainerStatsResponse, ContainerSummary, HealthStatusEnum},
 };
 use futures::TryStreamExt;
 use hashbrown::{HashMap, HashSet};
@@ -155,9 +155,12 @@ impl DockerDeviceProvider {
                 docker: self.docker.clone(),
                 container_name: container_name.clone(),
             });
+            let container_health: Box<Sensor> =
+                EntityDetails::new(&device_identifier, "Health", "mdi:medication-outline").into();
             let container_status: Box<Sensor> = EntityDetails::new_without_icon(&device_identifier, "Status").into();
             let container_status_data = Box::new(ContainerStatus {
                 state_topic: container_status.details().get_topic_for_state(None),
+                health_topic: container_health.details().get_topic_for_state(None),
                 start_button_availability_topic: start_button.details().get_topic_for_availability(None),
                 restart_button_availability_topic: restart_button.details().get_topic_for_availability(None),
                 stop_button_availability_topic: stop_button.details().get_topic_for_availability(None),
@@ -197,6 +200,7 @@ impl DockerDeviceProvider {
                     start_button,
                     stop_button,
                     remove_button,
+                    container_health,
                 ],
                 vec![
                     log_text_data,
@@ -447,6 +451,7 @@ struct ContainerStatus {
     start_button_availability_topic: String,
     restart_button_availability_topic: String,
     stop_button_availability_topic: String,
+    health_topic: String,
 }
 #[async_trait]
 impl HandlesData for ContainerStatus {
@@ -465,12 +470,21 @@ impl HandlesData for ContainerStatus {
         let is_running = [state.running, state.paused, state.restarting]
             .into_iter()
             .any(|s| s == Some(true));
-        Ok(hashmap! {
+        let health = state
+            .health
+            .unwrap_or_default()
+            .status
+            .unwrap_or(HealthStatusEnum::EMPTY);
+        let mut map = hashmap! {
             self.state_topic.clone() => state.status.unwrap().to_string(),
             self.start_button_availability_topic.clone() => if is_running { "offline" } else { "online" }.to_string(),
             self.restart_button_availability_topic.clone() => if is_running { "online" } else { "offline" }.to_string(),
             self.stop_button_availability_topic.clone() => if is_running { "online" } else { "offline" }.to_string(),
-        })
+        };
+        if !matches!(health, HealthStatusEnum::EMPTY) {
+            map.insert(self.health_topic.clone(), health.to_string());
+        }
+        Ok(map)
     }
 }
 
@@ -698,10 +712,7 @@ struct ContainerStaticData {
 }
 #[async_trait]
 impl HandlesData for ContainerStaticData {
-    async fn get_entity_data(
-        &self,
-        _cancellation_token: CancellationToken,
-    ) -> crate::devices::Result<HashMap<String, String>> {
+    async fn get_entity_data(&self, _: CancellationToken) -> crate::devices::Result<HashMap<String, String>> {
         Ok(hashmap! {
             self.image.0.clone() => self.image.1.clone()
         })
