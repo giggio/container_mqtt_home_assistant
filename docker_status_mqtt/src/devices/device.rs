@@ -145,7 +145,7 @@ impl Device {
         let mut device_json = json!({
             "device": self.details,
             "origin": self.origin,
-            "availability_topic": self.availability_topic(),
+            "availability": [{ "topic": self.availability_topic() }],
         });
         let mut entities_map = Map::new();
         for entity in &self.entities {
@@ -282,7 +282,7 @@ mod tests {
                 "sw": "1.0.0",
                 "url": "http://example.com"
             },
-            "availability_topic": "dev1/availability",
+            "availability": [{ "topic": "dev1/availability" }],
             "components": {
                 "test": true,
            },
@@ -386,7 +386,7 @@ mod tests {
                 "sw": "1.0.0",
                 "url": "http://example.com",
             },
-            "availability_topic": "dev1/availability",
+            "availability": [{ "topic": "dev1/availability" }],
             "components": {}
         });
         assert_eq!(

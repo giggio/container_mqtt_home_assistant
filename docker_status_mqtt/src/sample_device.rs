@@ -565,7 +565,7 @@ mod tests {
                 "sw": env!("CARGO_PKG_VERSION"),
                 "url": "https://github.com/giggio/docker-status-mqtt",
             },
-            "availability_topic": "device_manager_id/availability",
+            "availability": [{ "topic": "device_manager_id/availability" }],
             "components": {
                 "memory_usage": {
                     "name": "Memory Usage",
@@ -654,7 +654,7 @@ mod tests {
                 "sw": env!("CARGO_PKG_VERSION"),
                 "url": "https://github.com/giggio/docker-status-mqtt",
             },
-            "availability_topic": "device_manager_id/availability",
+            "availability": [{ "topic": "device_manager_id/availability" }],
             "components": {
                "some_text": {
                    "command_topic": "dependent_device/some_text/command",

@@ -130,26 +130,20 @@ impl DockerDeviceProvider {
                 container_name: container_name.clone(),
                 last_cpu_stats: Arc::new(RwLock::new(None)),
             });
-            let container_status: Box<Sensor> = EntityDetails::new_without_icon(&device_identifier, "Status").into();
-            let container_status_data = Box::new(ContainerStatus {
-                state_topic: container_status.details().get_topic_for_state(None),
-                docker: self.docker.clone(),
-                container_name: container_name.clone(),
-                cancellation_token: cancellation_token.clone(),
-            });
-            let restart_button = Box::new(Button::new(&device_identifier, "Restart", "mdi:restart"));
+            let restart_button =
+                Box::new(Button::new(&device_identifier, "Restart", "mdi:restart").can_be_made_unavailable());
             let restart_button_data = Box::new(RestartButton {
                 command_topic: restart_button.details().get_topic_for_command(None),
                 docker: self.docker.clone(),
                 container_name: container_name.clone(),
             });
-            let start_button = Box::new(Button::new(&device_identifier, "Start", "mdi:play"));
+            let start_button = Box::new(Button::new(&device_identifier, "Start", "mdi:play").can_be_made_unavailable());
             let start_button_data = Box::new(StartButton {
                 command_topic: start_button.details().get_topic_for_command(None),
                 docker: self.docker.clone(),
                 container_name: container_name.clone(),
             });
-            let stop_button = Box::new(Button::new(&device_identifier, "Stop", "mdi:stop"));
+            let stop_button = Box::new(Button::new(&device_identifier, "Stop", "mdi:stop").can_be_made_unavailable());
             let stop_button_data = Box::new(StopButton {
                 command_topic: stop_button.details().get_topic_for_command(None),
                 docker: self.docker.clone(),
@@ -160,6 +154,16 @@ impl DockerDeviceProvider {
                 command_topic: remove_button.details().get_topic_for_command(None),
                 docker: self.docker.clone(),
                 container_name: container_name.clone(),
+            });
+            let container_status: Box<Sensor> = EntityDetails::new_without_icon(&device_identifier, "Status").into();
+            let container_status_data = Box::new(ContainerStatus {
+                state_topic: container_status.details().get_topic_for_state(None),
+                start_button_availability_topic: start_button.details().get_topic_for_availability(None),
+                restart_button_availability_topic: restart_button.details().get_topic_for_availability(None),
+                stop_button_availability_topic: stop_button.details().get_topic_for_availability(None),
+                docker: self.docker.clone(),
+                container_name: container_name.clone(),
+                cancellation_token: cancellation_token.clone(),
             });
             let container_device = Device::new_with_entities(
                 DeviceDetails {
@@ -431,6 +435,9 @@ struct ContainerStatus {
     docker: Docker,
     container_name: String,
     cancellation_token: CancellationToken,
+    start_button_availability_topic: String,
+    restart_button_availability_topic: String,
+    stop_button_availability_topic: String,
 }
 #[async_trait]
 impl HandlesData for ContainerStatus {
@@ -445,7 +452,16 @@ impl HandlesData for ContainerStatus {
                 Some(InspectContainerOptionsBuilder::new().build()),
             ))
             .await??;
-        Ok(hashmap! {self.state_topic.clone() => inspect.state.unwrap().status.unwrap().to_string()})
+        let state = inspect.state.unwrap();
+        let is_running = [state.running, state.paused, state.restarting]
+            .into_iter()
+            .any(|s| s == Some(true));
+        Ok(hashmap! {
+            self.state_topic.clone() => state.status.unwrap().to_string(),
+            self.start_button_availability_topic.clone() => if is_running { "offline" } else { "online" }.to_string(),
+            self.restart_button_availability_topic.clone() => if is_running { "online" } else { "offline" }.to_string(),
+            self.stop_button_availability_topic.clone() => if is_running { "online" } else { "offline" }.to_string(),
+        })
     }
 }
 
@@ -504,8 +520,21 @@ impl ContainerStats {
 impl HandlesData for ContainerStats {
     async fn get_entity_data(
         &self,
-        _cancellation_token: CancellationToken,
+        cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
+        let inspect = cancellation_token
+            .wait_on(self.docker.inspect_container(
+                &self.container_name,
+                Some(InspectContainerOptionsBuilder::new().build()),
+            ))
+            .await??;
+        if !inspect.state.unwrap().running.unwrap_or(false) {
+            *self.last_cpu_stats.write().await = None;
+            return Ok(hashmap! {
+                self.used_memory_state_topic.clone() => "".to_string(),
+                self.used_cpu_state_topic.clone() => "".to_string()
+            });
+        }
         let stats_stream = self.docker.stats(
             &self.container_name,
             Some(StatsOptionsBuilder::new().stream(false).one_shot(true).build()),
@@ -697,7 +726,7 @@ mod tests {
     use bollard::{
         container::LogOutput,
         models::ContainerSummary,
-        secret::{ContainerCpuStats, ContainerCpuUsage, ContainerMemoryStats},
+        secret::{ContainerCpuStats, ContainerCpuUsage, ContainerInspectResponse, ContainerMemoryStats},
     };
     use docker_client::MockDocker;
     use futures::stream;
@@ -858,6 +887,16 @@ mod tests {
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
+        mock_docker.expect_inspect_container().returning(|_, _| {
+            let inspect = ContainerInspectResponse {
+                state: Some(bollard::models::ContainerState {
+                    running: Some(true),
+                    ..bollard::models::ContainerState::default()
+                }),
+                ..ContainerInspectResponse::default()
+            };
+            Ok(inspect)
+        });
 
         let container_stats = ContainerStats {
             used_memory_state_topic: "test_container/used_memory/state".to_string(),
@@ -904,6 +943,16 @@ mod tests {
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
+        mock_docker.expect_inspect_container().returning(|_, _| {
+            let inspect = ContainerInspectResponse {
+                state: Some(bollard::models::ContainerState {
+                    running: Some(true),
+                    ..bollard::models::ContainerState::default()
+                }),
+                ..ContainerInspectResponse::default()
+            };
+            Ok(inspect)
+        });
 
         let container_stats = ContainerStats {
             used_memory_state_topic: "test_container/used_memory/state".to_string(),
@@ -941,6 +990,16 @@ mod tests {
         mock_docker
             .expect_stats()
             .returning(|_, _| Box::pin(stream::iter(vec![])));
+        mock_docker.expect_inspect_container().returning(|_, _| {
+            let inspect = ContainerInspectResponse {
+                state: Some(bollard::models::ContainerState {
+                    running: Some(true),
+                    ..bollard::models::ContainerState::default()
+                }),
+                ..ContainerInspectResponse::default()
+            };
+            Ok(inspect)
+        });
 
         let container_stats = ContainerStats {
             used_memory_state_topic: "test_container/used_memory/state".to_string(),
@@ -967,6 +1026,16 @@ mod tests {
                 ..ContainerStatsResponse::default()
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
+        });
+        mock_docker.expect_inspect_container().returning(|_, _| {
+            let inspect = ContainerInspectResponse {
+                state: Some(bollard::models::ContainerState {
+                    running: Some(true),
+                    ..bollard::models::ContainerState::default()
+                }),
+                ..ContainerInspectResponse::default()
+            };
+            Ok(inspect)
         });
 
         let container_stats = ContainerStats {
@@ -997,6 +1066,16 @@ mod tests {
                 ..ContainerStatsResponse::default()
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
+        });
+        mock_docker.expect_inspect_container().returning(|_, _| {
+            let inspect = ContainerInspectResponse {
+                state: Some(bollard::models::ContainerState {
+                    running: Some(true),
+                    ..bollard::models::ContainerState::default()
+                }),
+                ..ContainerInspectResponse::default()
+            };
+            Ok(inspect)
         });
 
         let container_stats = ContainerStats {
@@ -1036,6 +1115,16 @@ mod tests {
                 ..ContainerStatsResponse::default()
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
+        });
+        mock_docker.expect_inspect_container().returning(|_, _| {
+            let inspect = ContainerInspectResponse {
+                state: Some(bollard::models::ContainerState {
+                    running: Some(true),
+                    ..bollard::models::ContainerState::default()
+                }),
+                ..ContainerInspectResponse::default()
+            };
+            Ok(inspect)
         });
 
         let container_stats = ContainerStats {

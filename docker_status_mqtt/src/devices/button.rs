@@ -15,6 +15,7 @@ pub struct Button {
     pub details: EntityDetails,
     pub device_class: Option<String>,
     pub command_topic: String,
+    pub can_be_made_unavailable: bool,
 }
 
 pub enum ButtonDeviceClass {
@@ -35,6 +36,7 @@ impl Button {
             details: details.add_command(command_topic.clone()),
             device_class: None,
             command_topic,
+            can_be_made_unavailable: false,
         }
     }
 
@@ -47,6 +49,10 @@ impl Button {
             }
             .to_string(),
         );
+        self
+    }
+    pub fn can_be_made_unavailable(mut self) -> Self {
+        self.can_be_made_unavailable = true;
         self
     }
 }
@@ -72,6 +78,17 @@ impl Entity for Button {
         let mut entity_details_json = self.details.json_for_discovery(device).await?;
         if let (Value::Object(entity_details_map), Value::Object(sensor_map)) = (&mut entity_details_json, json) {
             entity_details_map.extend(sensor_map);
+            if self.can_be_made_unavailable {
+                let availability_topic = self.details.get_topic_for_availability(None);
+                entity_details_map.insert(
+                    "availability".to_string(),
+                    json!([
+                        { "topic": device.availability_topic() },
+                        { "topic": availability_topic },
+                    ]),
+                );
+                entity_details_map.insert("availability_mode".to_string(), Value::String("all".to_string()));
+            }
         } else {
             return Err(Error::IncorrectJsonStructure);
         }
@@ -153,6 +170,45 @@ mod tests {
                 "state_topic": "test_device/outlet_button/state",
                 "unique_id": "test_device_outlet_button"
             }
+        });
+        assert_eq!(
+            serde_json::to_string_pretty(&json).unwrap(),
+            serde_json::to_string_pretty(&expected_json).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_button_json_for_discovery_can_be_made_unavailable() {
+        let device = create_test_device_with_identifier("test_device");
+        let button = Button::new(
+            "test_device".to_string(),
+            "Test Button".to_string(),
+            "mdi:button".to_string(),
+        )
+        .can_be_made_unavailable();
+        let json = button
+            .json_for_discovery(&device, CancellationToken::default())
+            .await
+            .unwrap();
+        let expected_json = json!({
+          "test_button": {
+            "command_topic": "test_device/test_button/command",
+            "device_class": null,
+            "icon": "mdi:button",
+            "name": "Test Button",
+            "platform": "button",
+            "state_topic": "test_device/test_button/state",
+            "unique_id": "test_device_test_button",
+            "availability": [
+                {
+                    "topic": "test_device/availability",
+                },
+                {
+                    "topic": "test_device/test_button/availability",
+                },
+            ],
+            "availability_mode": "all",
+          }
         });
         assert_eq!(
             serde_json::to_string_pretty(&json).unwrap(),

@@ -163,6 +163,12 @@ impl EntityDetails {
         format!("{topic_path}/state")
     }
 
+    pub fn get_topic_for_availability(&self, item: Option<&str>) -> String {
+        let topic_path = self.get_topic_path(item);
+        let command = format!("{topic_path}/availability");
+        command
+    }
+
     pub fn get_topic_path(&self, item: Option<&str>) -> String {
         let basic_path = format!("{}/{}", self.device_identifier, self.id);
         if let Some(item) = item {

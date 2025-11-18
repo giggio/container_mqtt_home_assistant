@@ -51,7 +51,7 @@ pub fn create_test_device_with_identifier(identifier: &str) -> Device {
             via_device: None,
         },
         create_device_origin(),
-        "dev1/availability".to_string(),
+        format!("{identifier}/availability").to_string(),
         "device_manager_1".to_string(),
         CancellationToken::default(),
     )
