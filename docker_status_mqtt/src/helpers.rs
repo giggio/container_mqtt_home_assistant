@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use chrono_humanize::{Accuracy, HumanTime, Tense};
 
 pub trait AsyncMap {
@@ -29,9 +27,43 @@ pub fn slugify(name: impl Into<String>) -> String {
     guls::slugify(name.into()).replace('-', "_")
 }
 
-pub fn pretty_format(duration: Duration) -> String {
-    let chrono_duration = chrono::Duration::from_std(duration).unwrap();
+pub fn pretty_format(duration: impl Into<DurationConvert>) -> String {
+    let chrono_duration: chrono::Duration = duration.into().into();
     HumanTime::from(chrono_duration).to_text_en(Accuracy::Precise, Tense::Present)
+}
+
+pub enum DurationConvert {
+    ChronoDuration(chrono::Duration),
+    StdDuration(std::time::Duration),
+}
+
+impl From<chrono::Duration> for DurationConvert {
+    fn from(value: chrono::Duration) -> Self {
+        DurationConvert::ChronoDuration(value)
+    }
+}
+
+impl From<std::time::Duration> for DurationConvert {
+    fn from(value: std::time::Duration) -> Self {
+        DurationConvert::StdDuration(value)
+    }
+}
+
+impl From<DurationConvert> for std::time::Duration {
+    fn from(duration_convert: DurationConvert) -> Self {
+        match duration_convert {
+            DurationConvert::ChronoDuration(d) => d.to_std().unwrap(),
+            DurationConvert::StdDuration(d) => d,
+        }
+    }
+}
+impl From<DurationConvert> for chrono::Duration {
+    fn from(duration_convert: DurationConvert) -> Self {
+        match duration_convert {
+            DurationConvert::ChronoDuration(d) => d,
+            DurationConvert::StdDuration(d) => chrono::Duration::from_std(d).unwrap(),
+        }
+    }
 }
 
 pub fn hostname() -> String {

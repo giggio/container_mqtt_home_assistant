@@ -9,10 +9,11 @@ pub use crate::devices::{
 };
 use crate::{cancellation_token::CancellationToken, device_manager::CommandResult, helpers::*};
 use async_trait::async_trait;
+use chrono::{Duration, Utc};
 use hashbrown::{HashMap, HashSet};
 use serde_json::{Value, json};
 use std::{fmt::Debug, sync::Arc};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 mod button;
 mod device;
@@ -27,6 +28,7 @@ mod text;
 pub mod test_helpers;
 
 pub type Result<T> = std::result::Result<T, Error>;
+type UtcDateTime = chrono::DateTime<chrono::Utc>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -77,6 +79,62 @@ pub trait HandlesData: Send + Sync + Debug {
         } else {
             trace!("Received event for topic {topic} and CAN handle it");
             self.do_handle_command(topic, payload, cancellation_token).await
+        }
+    }
+
+    fn debounce(self, duration: Duration) -> DebouncedHandler
+    where
+        Self: Sized + 'static,
+    {
+        DebouncedHandler {
+            inner: Box::new(self),
+            duration,
+            last_pool: Mutex::new(UtcDateTime::MIN_UTC),
+            type_name: std::any::type_name::<Self>().rsplit("::").next().unwrap().to_string(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DebouncedHandler {
+    inner: Box<dyn HandlesData>,
+    duration: Duration,
+    last_pool: Mutex<UtcDateTime>,
+    type_name: String,
+}
+
+#[async_trait]
+impl HandlesData for DebouncedHandler {
+    fn get_command_topics(&self) -> Vec<&str> {
+        self.inner.get_command_topics()
+    }
+
+    async fn do_handle_command(
+        &mut self,
+        topic: &str,
+        payload: &str,
+        cancellation_token: CancellationToken,
+    ) -> Result<CommandResult> {
+        self.inner.do_handle_command(topic, payload, cancellation_token).await
+    }
+
+    async fn get_entity_data(&self, cancellation_token: CancellationToken) -> Result<HashMap<String, String>> {
+        let now = Utc::now();
+        let mut last_pool = self.last_pool.lock().await;
+        let expires = *last_pool + self.duration;
+        if now > expires {
+            trace!(
+                "Updating last data retrieval time to now for {}, and getting data...",
+                self.type_name
+            );
+            *last_pool = now;
+            self.inner.get_entity_data(cancellation_token).await
+        } else {
+            trace!(
+                "Skipping data retrieval for {} to avoid excessive load until {expires}",
+                self.type_name
+            );
+            Ok(HashMap::new())
         }
     }
 }

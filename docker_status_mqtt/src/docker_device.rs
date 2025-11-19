@@ -1,15 +1,15 @@
 use async_trait::async_trait;
 use bollard::{
     query_parameters::{
-        DataUsageOptions, InspectContainerOptionsBuilder, ListContainersOptionsBuilder, LogsOptionsBuilder,
-        RemoveContainerOptionsBuilder, RestartContainerOptionsBuilder, StartContainerOptionsBuilder,
-        StatsOptionsBuilder, StopContainerOptionsBuilder,
+        DataUsageOptions, InspectContainerOptionsBuilder, ListContainersOptionsBuilder, ListNetworksOptions,
+        LogsOptionsBuilder, RemoveContainerOptionsBuilder, RestartContainerOptionsBuilder,
+        StartContainerOptionsBuilder, StatsOptionsBuilder, StopContainerOptionsBuilder,
     },
     secret::{
         ContainerCpuStats, ContainerStatsResponse, ContainerSummary, ContainerSummaryStateEnum, HealthStatusEnum,
     },
 };
-use chrono::Utc;
+use chrono::Duration;
 use futures::TryStreamExt;
 use hashbrown::{HashMap, HashSet};
 use serde_json::json;
@@ -30,7 +30,6 @@ use crate::{
 };
 
 const HOST_DEVICE_METADATA: &str = "host_device";
-type UtcDateTime = chrono::DateTime<chrono::Utc>;
 
 #[cfg(not(test))]
 pub mod docker_client {
@@ -282,20 +281,35 @@ impl DeviceProvider for DockerDeviceProvider {
             None,
             None,
         ));
-        let df_data = Box::new(DiskFree {
-            images_state_topic: images.details().get_topic_for_state(None),
-            images_attributes_state_topic: images.details().get_topic_for_state(Some("attributes")),
-            volumes_state_topic: volumes.details().get_topic_for_state(None),
-            volumes_attributes_state_topic: volumes.details().get_topic_for_state(Some("attributes")),
-            build_cache_state_topic: build_cache.details().get_topic_for_state(None),
-            build_cache_attributes_state_topic: build_cache.details().get_topic_for_state(Some("attributes")),
-            number_of_containers_state_topic: number_of_containers.details().get_topic_for_state(None),
-            number_of_containers_attributes_state_topic: number_of_containers
-                .details()
-                .get_topic_for_state(Some("attributes")),
-            docker: self.docker.clone(),
-            last_pool: RwLock::new(UtcDateTime::MIN_UTC),
-        });
+        let df_data = Box::new(
+            DiskFree {
+                images_state_topic: images.details().get_topic_for_state(None),
+                images_attributes_state_topic: images.details().get_topic_for_state(Some("attributes")),
+                volumes_state_topic: volumes.details().get_topic_for_state(None),
+                volumes_attributes_state_topic: volumes.details().get_topic_for_state(Some("attributes")),
+                build_cache_state_topic: build_cache.details().get_topic_for_state(None),
+                build_cache_attributes_state_topic: build_cache.details().get_topic_for_state(Some("attributes")),
+                number_of_containers_state_topic: number_of_containers.details().get_topic_for_state(None),
+                number_of_containers_attributes_state_topic: number_of_containers
+                    .details()
+                    .get_topic_for_state(Some("attributes")),
+                docker: self.docker.clone(),
+            }
+            .debounce(Duration::hours(1)),
+        );
+        let network_info = Box::new(Sensor::new_with_details(
+            EntityDetails::new(host_identifier.clone(), "Networks", "mdi:network").has_attributes(),
+            None,
+            None,
+        ));
+        let network_info_data = Box::new(
+            NetworkInfo {
+                state_topic: network_info.details().get_topic_for_state(None),
+                state_attributes_topic: network_info.details().get_topic_for_state(Some("attributes")),
+                docker: self.docker.clone(),
+            }
+            .debounce(Duration::hours(1)),
+        );
         let host_device = Device::new_with_entities(
             DeviceDetails {
                 name: self.provider_name.clone(),
@@ -310,8 +324,15 @@ impl DeviceProvider for DockerDeviceProvider {
                 url: "https://github.com/giggio/docker-status-mqtt".to_string(),
             },
             availability_topic.clone(),
-            vec![number_of_containers, host_version, images, volumes, build_cache],
-            vec![host_version_data, df_data],
+            vec![
+                number_of_containers,
+                host_version,
+                images,
+                volumes,
+                build_cache,
+                network_info,
+            ],
+            vec![host_version_data, df_data, network_info_data],
             self.id(),
             cancellation_token.clone(),
         )
@@ -472,6 +493,39 @@ impl HandlesData for GetLogsButton {
 }
 
 #[derive(Debug)]
+struct NetworkInfo {
+    state_topic: String,
+    docker: Docker,
+    state_attributes_topic: String,
+}
+#[async_trait]
+impl HandlesData for NetworkInfo {
+    async fn get_entity_data(
+        &self,
+        cancellation_token: CancellationToken,
+    ) -> crate::devices::Result<HashMap<String, String>> {
+        let networks = cancellation_token
+            .wait_on(self.docker.list_networks(None::<ListNetworksOptions>))
+            .await??;
+        let network_count = networks.len();
+        Ok(hashmap! {
+            self.state_topic.clone() => network_count.to_string(),
+            self.state_attributes_topic.clone() => json!({
+                "networks": networks.iter().filter_map(|n| {
+                    let name = n.name.clone().unwrap_or_else(|| n.id.clone().unwrap_or_default());
+                    if name.is_empty() {
+                        None
+                    } else {
+                        Some(name)
+                    }
+                }).collect::<Vec<String>>(),
+            }).to_string(),
+
+        })
+    }
+}
+
+#[derive(Debug)]
 struct HostVersion {
     state_topic: String,
     docker: Docker,
@@ -496,7 +550,6 @@ struct DiskFree {
     docker: Docker,
     images_state_topic: String,
     images_attributes_state_topic: String,
-    last_pool: RwLock<UtcDateTime>,
     volumes_state_topic: String,
     volumes_attributes_state_topic: String,
     build_cache_state_topic: String,
@@ -510,19 +563,6 @@ impl HandlesData for DiskFree {
         &self,
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
-        {
-            if Utc::now()
-                .signed_duration_since(*self.last_pool.read().await)
-                .num_hours()
-                .abs()
-                < 1
-            {
-                trace!("Skipping df data retrieval from Docker to avoid excessive load");
-                return Ok(HashMap::new());
-            }
-            trace!("Updating last df data retrieval time to now, and getting data...");
-            *self.last_pool.write().await = Utc::now();
-        }
         let data_usage = cancellation_token
             .wait_on(self.docker.df(None::<DataUsageOptions>))
             .await??;
@@ -934,10 +974,10 @@ pub mod docker_client {
     use bollard::{
         container::LogOutput,
         errors::Error,
-        models::{ContainerInspectResponse, ContainerSummary, SystemDataUsageResponse, SystemInfo},
+        models::{ContainerInspectResponse, ContainerSummary, Network, SystemDataUsageResponse, SystemInfo},
         query_parameters::{
-            DataUsageOptions, InspectContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
-            RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
+            DataUsageOptions, InspectContainerOptions, ListContainersOptions, ListNetworksOptions, LogsOptions,
+            RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
         },
         secret::ContainerStatsResponse,
     };
@@ -958,6 +998,7 @@ pub mod docker_client {
             pub async fn inspect_container(&self, container_name: &str, options: Option<InspectContainerOptions>) -> std::result::Result<ContainerInspectResponse, Error>;
             pub async fn info(&self) -> std::result::Result<SystemInfo, Error>;
             pub async fn df(&self, options: Option<DataUsageOptions>) -> std::result::Result<SystemDataUsageResponse, Error>;
+            pub async fn list_networks( &self, options: Option<ListNetworksOptions>) -> std::result::Result<Vec<Network>, Error>;
         }
 
         impl Clone for Docker {
