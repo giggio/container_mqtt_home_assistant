@@ -1,14 +1,18 @@
 use async_trait::async_trait;
 use bollard::{
     query_parameters::{
-        InspectContainerOptionsBuilder, ListContainersOptionsBuilder, LogsOptionsBuilder,
+        DataUsageOptions, InspectContainerOptionsBuilder, ListContainersOptionsBuilder, LogsOptionsBuilder,
         RemoveContainerOptionsBuilder, RestartContainerOptionsBuilder, StartContainerOptionsBuilder,
         StatsOptionsBuilder, StopContainerOptionsBuilder,
     },
-    secret::{ContainerCpuStats, ContainerStatsResponse, ContainerSummary, HealthStatusEnum},
+    secret::{
+        ContainerCpuStats, ContainerStatsResponse, ContainerSummary, ContainerSummaryStateEnum, HealthStatusEnum,
+    },
 };
+use chrono::Utc;
 use futures::TryStreamExt;
 use hashbrown::{HashMap, HashSet};
+use serde_json::json;
 use std::{
     fmt::Debug,
     sync::{Arc, atomic::AtomicBool},
@@ -26,6 +30,7 @@ use crate::{
 };
 
 const HOST_DEVICE_METADATA: &str = "host_device";
+type UtcDateTime = chrono::DateTime<chrono::Utc>;
 
 #[cfg(not(test))]
 pub mod docker_client {
@@ -238,15 +243,15 @@ impl DeviceProvider for DockerDeviceProvider {
             .await?;
         // todo: improve device for the docker host
         let host_identifier = slugify(&self.provider_name);
-        let number_of_containers = Box::new(Sensor::new_simple(
-            host_identifier.clone(),
-            "Total containers",
-            "mdi:truck-cargo-container",
-        ));
-        let number_of_containers_data = Box::new(NumberOfContainers {
-            state_topic: number_of_containers.details().get_topic_for_state(None),
-            docker: self.docker.clone(),
-        });
+        // let number_of_containers = Box::new(Sensor::new_simple(
+        //     host_identifier.clone(),
+        //     "Total containers",
+        //     "mdi:truck-cargo-container",
+        // ));
+        // let number_of_containers_data = Box::new(NumberOfContainers {
+        //     state_topic: number_of_containers.details().get_topic_for_state(None),
+        //     docker: self.docker.clone(),
+        // });
         let host_version = Box::new(Sensor::new_simple(
             host_identifier.clone(),
             "Host version",
@@ -255,6 +260,41 @@ impl DeviceProvider for DockerDeviceProvider {
         let host_version_data = Box::new(HostVersion {
             state_topic: host_version.details().get_topic_for_state(None),
             docker: self.docker.clone(),
+        });
+        let images = Box::new(Sensor::new_with_details(
+            EntityDetails::new(host_identifier.clone(), "Images", "mdi:oci").has_attributes(),
+            None,
+            None,
+        ));
+        let volumes = Box::new(Sensor::new_with_details(
+            EntityDetails::new(host_identifier.clone(), "Volumes", "mdi:harddisk").has_attributes(),
+            None,
+            None,
+        ));
+        let build_cache = Box::new(Sensor::new_with_details(
+            EntityDetails::new(host_identifier.clone(), "Build cache", "mdi:sync-circle").has_attributes(),
+            None,
+            None,
+        ));
+        let number_of_containers = Box::new(Sensor::new_with_details(
+            EntityDetails::new(host_identifier.clone(), "Total containers", "mdi:truck-cargo-container")
+                .has_attributes(),
+            None,
+            None,
+        ));
+        let df_data = Box::new(DiskFree {
+            images_state_topic: images.details().get_topic_for_state(None),
+            images_attributes_state_topic: images.details().get_topic_for_state(Some("attributes")),
+            volumes_state_topic: volumes.details().get_topic_for_state(None),
+            volumes_attributes_state_topic: volumes.details().get_topic_for_state(Some("attributes")),
+            build_cache_state_topic: build_cache.details().get_topic_for_state(None),
+            build_cache_attributes_state_topic: build_cache.details().get_topic_for_state(Some("attributes")),
+            number_of_containers_state_topic: number_of_containers.details().get_topic_for_state(None),
+            number_of_containers_attributes_state_topic: number_of_containers
+                .details()
+                .get_topic_for_state(Some("attributes")),
+            docker: self.docker.clone(),
+            last_pool: RwLock::new(UtcDateTime::MIN_UTC),
         });
         let host_device = Device::new_with_entities(
             DeviceDetails {
@@ -270,8 +310,8 @@ impl DeviceProvider for DockerDeviceProvider {
                 url: "https://github.com/giggio/docker-status-mqtt".to_string(),
             },
             availability_topic.clone(),
-            vec![number_of_containers, host_version],
-            vec![number_of_containers_data, host_version_data],
+            vec![number_of_containers, host_version, images, volumes, build_cache],
+            vec![host_version_data, df_data],
             self.id(),
             cancellation_token.clone(),
         )
@@ -452,24 +492,165 @@ impl HandlesData for HostVersion {
 }
 
 #[derive(Debug)]
-struct NumberOfContainers {
-    state_topic: String,
+struct DiskFree {
     docker: Docker,
+    images_state_topic: String,
+    images_attributes_state_topic: String,
+    last_pool: RwLock<UtcDateTime>,
+    volumes_state_topic: String,
+    volumes_attributes_state_topic: String,
+    build_cache_state_topic: String,
+    build_cache_attributes_state_topic: String,
+    number_of_containers_state_topic: String,
+    number_of_containers_attributes_state_topic: String,
 }
 #[async_trait]
-impl HandlesData for NumberOfContainers {
+impl HandlesData for DiskFree {
     async fn get_entity_data(
         &self,
-        _cancellation_token: CancellationToken,
+        cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
-        let count = self
-            .docker
-            .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build()))
-            .await?
-            .len();
-        Ok(hashmap! {self.state_topic.clone() => count.to_string()})
+        {
+            if Utc::now()
+                .signed_duration_since(*self.last_pool.read().await)
+                .num_hours()
+                .abs()
+                < 1
+            {
+                trace!("Skipping df data retrieval from Docker to avoid excessive load");
+                return Ok(HashMap::new());
+            }
+            trace!("Updating last df data retrieval time to now, and getting data...");
+            *self.last_pool.write().await = Utc::now();
+        }
+        let data_usage = cancellation_token
+            .wait_on(self.docker.df(None::<DataUsageOptions>))
+            .await??;
+        if let Some(image_summary) = data_usage.images
+            && let Some(volume_summary) = data_usage.volumes
+            && let Some(build_cache_summary) = data_usage.build_cache
+            && let Some(containers_summary) = data_usage.containers
+        {
+            let mut images_active_count = 0;
+            let mut image_size = 0;
+            let mut image_reclaimable = 0;
+            let mut number_of_images = 0;
+            for img in image_summary {
+                number_of_images += 1;
+                image_size += img.size;
+                if img.containers > 0 {
+                    images_active_count += 1;
+                } else {
+                    image_reclaimable += img.size;
+                }
+            }
+
+            let mut volumes_active_count = 0;
+            let mut volume_size = 0i64;
+            let mut volume_reclaimable = 0i64;
+            let mut number_of_volumes = 0;
+            for vol in volume_summary {
+                number_of_volumes += 1;
+                if let Some(usage_data) = &vol.usage_data {
+                    volume_size += usage_data.size;
+                    if usage_data.ref_count > 0 {
+                        volumes_active_count += 1;
+                    } else {
+                        volume_reclaimable += usage_data.size;
+                    }
+                }
+            }
+
+            let mut build_cache_active_count = 0;
+            let mut build_cache_size = 0;
+            let mut build_cache_reclaimable = 0;
+            let mut number_of_build_caches = 0;
+            for bc in build_cache_summary {
+                number_of_build_caches += 1;
+                let size = bc.size.unwrap_or(0);
+                build_cache_size += size;
+                if bc.in_use.unwrap_or(false) {
+                    build_cache_active_count += 1;
+                } else {
+                    build_cache_reclaimable += size;
+                }
+            }
+
+            let mut containers_active_count = 0;
+            let mut number_of_containers = 0;
+            let mut containers_reclaimable = 0;
+            let mut container_size = 0;
+            for container in containers_summary {
+                number_of_containers += 1;
+                let size = container.size_rw.unwrap_or(0);
+                container_size += size;
+                if let Some(state) = &container.state
+                    && matches!(
+                        state,
+                        ContainerSummaryStateEnum::RUNNING
+                            | ContainerSummaryStateEnum::PAUSED
+                            | ContainerSummaryStateEnum::RESTARTING
+                    )
+                {
+                    containers_active_count += 1;
+                } else {
+                    containers_reclaimable += size;
+                }
+            }
+
+            let data = hashmap! {
+                self.images_state_topic.clone() => number_of_images.to_string(),
+                self.images_attributes_state_topic.clone() => json!({
+                    "images_active": images_active_count,
+                    "images_size_kib": (image_size / 1024),
+                    "images_reclaimable_kib": (image_reclaimable / 1024),
+                }).to_string(),
+                self.volumes_state_topic.clone() => number_of_volumes.to_string(),
+                self.volumes_attributes_state_topic.clone() => json!({
+                    "volumes_active": volumes_active_count,
+                    "volumes_size_kib": (volume_size / 1024),
+                    "volumes_reclaimable_kib": (volume_reclaimable / 1024),
+                }).to_string(),
+                self.build_cache_state_topic.clone() => number_of_build_caches.to_string(),
+                self.build_cache_attributes_state_topic.clone() => json!({
+                    "build_caches_active": build_cache_active_count,
+                    "build_caches_size_kib": (build_cache_size / 1024),
+                    "build_caches_reclaimable_kib": (build_cache_reclaimable / 1024),
+                }).to_string(),
+                self.number_of_containers_state_topic.clone() => number_of_containers.to_string(),
+                self.number_of_containers_attributes_state_topic.clone() => json!({
+                    "containers_active": containers_active_count,
+                    "containers_size_kib": (container_size / 1024),
+                    "containers_reclaimable_kib": (containers_reclaimable / 1024),
+                }).to_string(),
+            };
+            trace!("Got df data from Docker: {data:?}");
+            Ok(data)
+        } else {
+            Ok(HashMap::new())
+        }
     }
 }
+
+// #[derive(Debug)]
+// struct NumberOfContainers {
+//     state_topic: String,
+//     docker: Docker,
+// }
+// #[async_trait]
+// impl HandlesData for NumberOfContainers {
+//     async fn get_entity_data(
+//         &self,
+//         _cancellation_token: CancellationToken,
+//     ) -> crate::devices::Result<HashMap<String, String>> {
+//         let count = self
+//             .docker
+//             .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build()))
+//             .await?
+//             .len();
+//         Ok(hashmap! {self.state_topic.clone() => count.to_string()})
+//     }
+// }
 
 #[derive(Debug)]
 struct ContainerStatus {
@@ -753,9 +934,9 @@ pub mod docker_client {
     use bollard::{
         container::LogOutput,
         errors::Error,
-        models::{ContainerInspectResponse, ContainerSummary, SystemInfo},
+        models::{ContainerInspectResponse, ContainerSummary, SystemDataUsageResponse, SystemInfo},
         query_parameters::{
-            InspectContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
+            DataUsageOptions, InspectContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
             RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
         },
         secret::ContainerStatsResponse,
@@ -776,6 +957,7 @@ pub mod docker_client {
             pub async fn remove_container(&self, container_name: &str, options: Option<RemoveContainerOptions>) -> std::result::Result<(), Error>;
             pub async fn inspect_container(&self, container_name: &str, options: Option<InspectContainerOptions>) -> std::result::Result<ContainerInspectResponse, Error>;
             pub async fn info(&self) -> std::result::Result<SystemInfo, Error>;
+            pub async fn df(&self, options: Option<DataUsageOptions>) -> std::result::Result<SystemDataUsageResponse, Error>;
         }
 
         impl Clone for Docker {
@@ -877,58 +1059,58 @@ mod tests {
         assert_eq!(data.len(), 0);
     }
 
-    #[tokio::test]
-    async fn test_number_of_containers_get_entity_data_success() {
-        let mut mock_docker = MockDocker::new();
+    // #[tokio::test]
+    // async fn test_number_of_containers_get_entity_data_success() {
+    //     let mut mock_docker = MockDocker::new();
+    //
+    //     let containers = vec![
+    //         ContainerSummary::default(),
+    //         ContainerSummary::default(),
+    //         ContainerSummary::default(),
+    //         ContainerSummary::default(),
+    //         ContainerSummary::default(),
+    //     ];
+    //
+    //     mock_docker
+    //         .expect_list_containers()
+    //         .returning(move |_| Ok(containers.clone()));
+    //
+    //     let number_of_containers = NumberOfContainers {
+    //         state_topic: "docker_host/total_containers/state".to_string(),
+    //         docker: mock_docker,
+    //     };
+    //
+    //     let data = number_of_containers
+    //         .get_entity_data(CancellationToken::default())
+    //         .await
+    //         .unwrap();
+    //
+    //     assert_eq!(data.len(), 1);
+    //     let topic = "docker_host/total_containers/state";
+    //     assert!(data.contains_key(topic));
+    //     assert_eq!(data.get(topic).unwrap(), "5");
+    // }
 
-        let containers = vec![
-            ContainerSummary::default(),
-            ContainerSummary::default(),
-            ContainerSummary::default(),
-            ContainerSummary::default(),
-            ContainerSummary::default(),
-        ];
-
-        mock_docker
-            .expect_list_containers()
-            .returning(move |_| Ok(containers.clone()));
-
-        let number_of_containers = NumberOfContainers {
-            state_topic: "docker_host/total_containers/state".to_string(),
-            docker: mock_docker,
-        };
-
-        let data = number_of_containers
-            .get_entity_data(CancellationToken::default())
-            .await
-            .unwrap();
-
-        assert_eq!(data.len(), 1);
-        let topic = "docker_host/total_containers/state";
-        assert!(data.contains_key(topic));
-        assert_eq!(data.get(topic).unwrap(), "5");
-    }
-
-    #[tokio::test]
-    async fn test_number_of_containers_get_entity_data_zero_containers() {
-        let mut mock_docker = MockDocker::new();
-
-        mock_docker.expect_list_containers().returning(|_| Ok(vec![]));
-
-        let number_of_containers = NumberOfContainers {
-            state_topic: "docker_host/total_containers/state".to_string(),
-            docker: mock_docker,
-        };
-
-        let data = number_of_containers
-            .get_entity_data(CancellationToken::default())
-            .await
-            .unwrap();
-
-        assert_eq!(data.len(), 1);
-        let topic = "docker_host/total_containers/state";
-        assert_eq!(data.get(topic).unwrap(), "0");
-    }
+    // #[tokio::test]
+    // async fn test_number_of_containers_get_entity_data_zero_containers() {
+    //     let mut mock_docker = MockDocker::new();
+    //
+    //     mock_docker.expect_list_containers().returning(|_| Ok(vec![]));
+    //
+    //     let number_of_containers = NumberOfContainers {
+    //         state_topic: "docker_host/total_containers/state".to_string(),
+    //         docker: mock_docker,
+    //     };
+    //
+    //     let data = number_of_containers
+    //         .get_entity_data(CancellationToken::default())
+    //         .await
+    //         .unwrap();
+    //
+    //     assert_eq!(data.len(), 1);
+    //     let topic = "docker_host/total_containers/state";
+    //     assert_eq!(data.get(topic).unwrap(), "0");
+    // }
 
     #[tokio::test]
     async fn test_container_stats_get_entity_data_success_for_memory_cpu_empty() {
