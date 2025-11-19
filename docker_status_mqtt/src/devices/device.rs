@@ -229,14 +229,14 @@ mod tests {
 
     #[test]
     fn test_device_command_topics_without_entities_is_empty() {
-        let device = create_test_device();
+        let device = make_device();
         let topics = device.command_topics();
         assert_eq!(topics.len(), 0);
     }
 
     #[test]
     fn test_device_command_topics_has_topic_when_has_entity() {
-        let mut device = create_test_device();
+        let mut device = make_device();
         let mut mock_entity_type = MockAnEntity::new();
         mock_entity_type.expect_details().return_const(
             EntityDetails::new("dev1".to_string(), "Test Switch".to_string(), "mdi:switch".to_string())
@@ -251,13 +251,13 @@ mod tests {
 
     #[test]
     fn test_device_availability_topic() {
-        let device = create_test_device();
+        let device = make_device();
         assert_eq!(device.availability_topic(), "dev1/availability");
     }
 
     #[test]
     fn test_device_discovery_topic() {
-        let device = create_test_device();
+        let device = make_device();
         assert_eq!(
             device.discovery_topic("homeassistant"),
             "homeassistant/device/test_device/config"
@@ -266,8 +266,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_device_json_for_discovery() {
-        let mut device = create_test_device();
-        let entity = get_mock_entity();
+        let mut device = make_device();
+        let entity = make_mock_entity();
         device.entities.push(Box::new(entity));
         let device_json = device.json_for_discovery().await.unwrap();
         let expected_json = json!({
@@ -295,8 +295,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_device_devices_data() {
-        let mut device = create_test_device();
-        device.data_handlers.push(Box::new(get_mock_data_handler()));
+        let mut device = make_device();
+        device.data_handlers.push(Box::new(make_mock_data_handler()));
         let data = device.get_entities_data().await.unwrap();
         assert_eq!(
             hashmap! { "dev1/test_name/state".to_string() => "test_state".to_string() },
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_device_command_topics_multiple_entities() {
-        let mut device = create_test_device();
+        let mut device = make_device();
 
         let mut mock_entity_type1 = MockAnEntity::new();
         mock_entity_type1.expect_details().return_const(
@@ -332,7 +332,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_device_handle_command_no_handlers() {
-        let mut device = create_test_device();
+        let mut device = make_device();
 
         let result = device.handle_command("unknown/topic", "payload").await.unwrap();
         assert!(!result.handled);
@@ -341,7 +341,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_device_handle_command_with_handler() {
-        let mut device = create_test_device();
+        let mut device = make_device();
 
         let mut data_handler = MockHandlesData::new();
         data_handler
@@ -371,7 +371,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_device_json_for_discovery_empty_entities() {
-        let device = create_test_device();
+        let device = make_device();
 
         let json = device.json_for_discovery().await.unwrap();
         let expected_json = json!({
@@ -411,8 +411,8 @@ mod tests {
     #[tokio::test]
     async fn test_device_discovery_topic_different_prefixes() {
         let device = Device::new(
-            create_device_details(),
-            create_device_origin(),
+            make_device_details(),
+            make_device_origin(),
             "test_device/availability".to_string(),
             "device_manager_1".to_string(),
             CancellationToken::default(),
@@ -427,7 +427,7 @@ mod tests {
     }
     #[test]
     fn test_metadata() {
-        let device = create_test_device().with_metadata(vec![Box::new("Metadata 1".to_string())]);
+        let device = make_device().with_metadata(vec![Box::new("Metadata 1".to_string())]);
         assert_eq!(vec!["Metadata 1".to_string()], device.get_metadata::<String>());
     }
 }

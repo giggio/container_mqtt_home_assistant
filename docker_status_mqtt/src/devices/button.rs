@@ -120,7 +120,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_button_json_for_discovery() {
-        let device = create_test_device_with_identifier("test_device");
+        let device = make_device_with_identifier("test_device");
         let button = Button::new(
             "test_device".to_string(),
             "Test Button".to_string(),
@@ -149,7 +149,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_button_json_for_discovery_with_device_class() {
-        let device = create_test_device_with_identifier("test_device");
+        let device = make_device_with_identifier("test_device");
         let button = Button::new(
             "test_device".to_string(),
             "Outlet Button".to_string(),
@@ -179,7 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_button_json_for_discovery_can_be_made_unavailable() {
-        let device = create_test_device_with_identifier("test_device");
+        let device = make_device_with_identifier("test_device");
         let button = Button::new(
             "test_device".to_string(),
             "Test Button".to_string(),

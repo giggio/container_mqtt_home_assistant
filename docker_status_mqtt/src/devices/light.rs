@@ -142,7 +142,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_light_json_for_discovery_without_brightness() {
-        let device = create_test_device_with_identifier("test_device");
+        let device = make_device_with_identifier("test_device");
         let light = Light::new(
             "test_device".to_string(),
             "Simple Light".to_string(),
@@ -176,7 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_light_json_for_discovery_with_brightness() {
-        let device = create_test_device_with_identifier("test_device");
+        let device = make_device_with_identifier("test_device");
         let light = Light::new(
             "test_device".to_string(),
             "Dimmable Light".to_string(),

@@ -106,7 +106,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_number_json_for_discovery() {
-        let device = create_test_device();
+        let device = make_device();
         let number = Number::new("dev1".to_string(), "Some number".to_string(), "mdi:x".to_string());
         let json = number
             .json_for_discovery(&device, CancellationToken::default())

@@ -310,7 +310,7 @@ pub async fn create_event_producers(
 mod tests {
     use futures::StreamExt;
     use serial_test::serial;
-    use std::{pin::pin, sync::Arc};
+    use std::{future, pin::pin, sync::Arc};
     use tokio::sync::Mutex;
 
     use super::*;
@@ -464,7 +464,7 @@ mod tests {
     #[serial]
     async fn test_publish_sensor_data_for_all_devices_skips_unchanged_data() {
         let mut device = make_empty_device();
-        device.data_handlers.push(Box::new(get_mock_data_handler()));
+        device.data_handlers.push(Box::new(make_mock_data_handler()));
         let devices = Devices::new_from_single_device(device, CancellationToken::default());
         let event_producer = TimedUpdateEventProvider::create_entity_update_event_producer(
             &devices,
@@ -482,5 +482,132 @@ mod tests {
         );
         let second_event = event_producer.next().await.unwrap().unwrap(); // Second call should skip unchanged data
         assert_eq!(vec![UpdateEvent::Data(hashmap! {})], second_event);
+    }
+
+    #[tokio::test]
+    async fn test_create_devices_created_and_removed_event_producer_adds_devices() {
+        let mut mock_provider = crate::devices::MockDeviceProvider::new();
+        mock_provider
+            .expect_add_discovered_devices()
+            .returning(|_, _, _| Box::pin(future::ready(Ok(["new_device".to_string()].into_iter().collect()))));
+        mock_provider
+            .expect_remove_missing_devices()
+            .returning(|_, _| Box::pin(future::ready(Ok(vec![]))));
+
+        let devices = make_empty_devices();
+        let event_producer = TimedUpdateEventProvider::create_devices_created_and_removed_event_producer(
+            Arc::new(vec![Box::new(mock_provider)]),
+            &devices,
+            "availability_topic".to_string(),
+            CancellationToken::default(),
+            Duration::from_millis(1),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+
+        let mut event_producer = pin!(event_producer);
+        let event = event_producer.next().await.unwrap().unwrap();
+        assert_eq!(
+            event,
+            vec![UpdateEvent::DevicesCreated(
+                ["new_device".to_string()].into_iter().collect()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_devices_created_and_removed_event_producer_removes_devices() {
+        let mut mock_provider = crate::devices::MockDeviceProvider::new();
+        mock_provider
+            .expect_add_discovered_devices()
+            .returning(|_, _, _| Box::pin(future::ready(Ok(HashSet::new()))));
+        mock_provider.expect_remove_missing_devices().returning(|_, _| {
+            let device = make_device_with_identifier("removed_device");
+            Box::pin(future::ready(Ok(vec![Arc::new(RwLock::new(device))])))
+        });
+
+        let devices = make_empty_devices();
+        let event_producer = TimedUpdateEventProvider::create_devices_created_and_removed_event_producer(
+            Arc::new(vec![Box::new(mock_provider)]),
+            &devices,
+            "availability_topic".to_string(),
+            CancellationToken::default(),
+            Duration::from_millis(1),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+
+        let mut event_producer = pin!(event_producer);
+        let event = event_producer.next().await.unwrap().unwrap();
+
+        assert_eq!(event.len(), 1);
+        match &event[0] {
+            UpdateEvent::DevicesRemoved(removed) => {
+                assert_eq!(removed.len(), 1);
+                let device = removed[0].read().await;
+                assert_eq!(device.details.identifier, "removed_device");
+            }
+            _ => panic!("Expected DevicesRemoved event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_devices_created_and_removed_event_producer_handles_errors() {
+        let mut mock_provider = crate::devices::MockDeviceProvider::new();
+        mock_provider
+            .expect_add_discovered_devices()
+            .returning(|_, _, _| Box::pin(future::ready(Err(crate::devices::Error::Unknown))));
+        mock_provider
+            .expect_remove_missing_devices()
+            .returning(|_, _| Box::pin(future::ready(Ok(vec![]))));
+
+        let devices = make_empty_devices();
+        let event_producer = TimedUpdateEventProvider::create_devices_created_and_removed_event_producer(
+            Arc::new(vec![Box::new(mock_provider)]),
+            &devices,
+            "availability_topic".to_string(),
+            CancellationToken::default(),
+            Duration::from_millis(1),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+
+        let mut event_producer = pin!(event_producer);
+        let result = event_producer.next().await.unwrap();
+        assert!(result.is_err());
+    }
+    #[tokio::test]
+    async fn test_create_devices_created_and_removed_event_producer_purges_last_messages() {
+        let devices = make_empty_devices();
+        let device = devices.iter().await.into_iter().next().unwrap();
+        let entity = make_mock_entity_with_device_id_and_name("removed_device", "Test Device");
+        {
+            device.write().await.entities.push(Box::new(entity));
+        }
+        let mut mock_provider = crate::devices::MockDeviceProvider::new();
+        mock_provider
+            .expect_add_discovered_devices()
+            .returning(|_, _, _| Box::pin(future::ready(Ok(HashSet::new()))));
+        mock_provider
+            .expect_remove_missing_devices()
+            .returning(move |_, _| Box::pin(future::ready(Ok(vec![device.clone()]))));
+
+        let last_messages = Arc::new(Mutex::new(hashmap! {
+            "removed_device/test_device/state".to_string() => "some_value".to_string(),
+            "other_device/test_device/state".to_string() => "other_value".to_string()
+        }));
+
+        let event_producer = TimedUpdateEventProvider::create_devices_created_and_removed_event_producer(
+            Arc::new(vec![Box::new(mock_provider)]),
+            &devices,
+            "availability_topic".to_string(),
+            CancellationToken::default(),
+            Duration::from_millis(1),
+            last_messages.clone(),
+        );
+
+        let mut event_producer = pin!(event_producer);
+        let _ = event_producer.next().await.unwrap().unwrap();
+
+        let messages = last_messages.lock().await;
+        assert!(!messages.contains_key("removed_device/test_device/state"));
+        assert!(messages.contains_key("other_device/test_device/state"));
     }
 }

@@ -101,7 +101,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_switch_json_for_discovery() {
-        let device = create_test_device_with_identifier("test_device");
+        let device = make_device_with_identifier("test_device");
         let switch = Switch::new(
             "test_device".to_string(),
             "Test Switch".to_string(),
@@ -133,7 +133,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_switch_json_for_discovery_with_device_class() {
-        let device = create_test_device_with_identifier("test_device");
+        let device = make_device_with_identifier("test_device");
         let switch = Switch::new(
             "test_device".to_string(),
             "Outlet Switch".to_string(),

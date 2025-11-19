@@ -11,9 +11,10 @@ use crate::{
         Devices, Entity, EntityDetails, EntityDetailsGetter, MockHandlesData,
         device::{Device, DeviceDetails, DeviceOrigin},
     },
+    helpers::*,
 };
 
-pub fn create_device_details() -> DeviceDetails {
+pub fn make_device_details() -> DeviceDetails {
     DeviceDetails {
         name: "Test Device".to_string(),
         identifier: "test_device".to_string(),
@@ -23,7 +24,7 @@ pub fn create_device_details() -> DeviceDetails {
     }
 }
 
-pub fn create_device_origin() -> DeviceOrigin {
+pub fn make_device_origin() -> DeviceOrigin {
     DeviceOrigin {
         name: "test-origin".to_string(),
         sw: "1.0.0".to_string(),
@@ -31,17 +32,17 @@ pub fn create_device_origin() -> DeviceOrigin {
     }
 }
 
-pub fn create_test_device() -> Device {
+pub fn make_device() -> Device {
     Device::new(
-        create_device_details(),
-        create_device_origin(),
+        make_device_details(),
+        make_device_origin(),
         "dev1/availability".to_string(),
         "device_manager_1".to_string(),
         CancellationToken::default(),
     )
 }
 
-pub fn create_test_device_with_identifier(identifier: &str) -> Device {
+pub fn make_device_with_identifier(identifier: &str) -> Device {
     Device::new(
         DeviceDetails {
             name: "Test Device".to_string(),
@@ -50,14 +51,14 @@ pub fn create_test_device_with_identifier(identifier: &str) -> Device {
             sw_version: "1.0.0".to_string(),
             via_device: None,
         },
-        create_device_origin(),
+        make_device_origin(),
         format!("{identifier}/availability").to_string(),
         "device_manager_1".to_string(),
         CancellationToken::default(),
     )
 }
 
-pub fn get_mock_entity() -> MockAnEntity {
+pub fn make_mock_entity() -> MockAnEntity {
     let mut entity_type = MockAnEntity::new();
     entity_type
         .expect_json_for_discovery()
@@ -69,7 +70,20 @@ pub fn get_mock_entity() -> MockAnEntity {
     entity_type
 }
 
-pub fn get_mock_data_handler() -> MockHandlesData {
+pub fn make_mock_entity_with_device_id_and_name(device_id: &str, name: &str) -> MockAnEntity {
+    let mut entity_type = MockAnEntity::new();
+    entity_type
+        .expect_json_for_discovery()
+        .returning(|_, _| Ok(json!({ "test": true })));
+    let name_slug = slugify(name);
+    entity_type.expect_details().return_const(
+        EntityDetails::new(device_id.to_string(), name.to_owned(), "testicon".to_string())
+            .add_command(format!("{device_id}/{name_slug}/command").to_string()),
+    );
+    entity_type
+}
+
+pub fn make_mock_data_handler() -> MockHandlesData {
     let mut data_handler = MockHandlesData::new();
     data_handler
         .expect_get_entity_data()

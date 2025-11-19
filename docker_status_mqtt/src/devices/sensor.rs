@@ -96,7 +96,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sensor_json_for_discovery() {
-        let device = create_test_device();
+        let device = make_device();
         let sensor = Sensor::new("test_device", "Temperature", "mdi:thermometer", "°C", "temperature");
         let json = sensor
             .json_for_discovery(&device, CancellationToken::default())
@@ -121,7 +121,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sensor_json_for_discovery_without_device_class_and_unit() {
-        let device = create_test_device_with_identifier("test_device");
+        let device = make_device_with_identifier("test_device");
         let sensor = Sensor::new_simple(
             "test_device".to_string(),
             "Generic Sensor".to_string(),
@@ -150,7 +150,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sensor_json_for_discovery_with_attributes() {
-        let device = create_test_device_with_identifier("test_device");
+        let device = make_device_with_identifier("test_device");
         let details = EntityDetails::new(
             "test_device".to_string(),
             "Sensor with Attributes".to_string(),
