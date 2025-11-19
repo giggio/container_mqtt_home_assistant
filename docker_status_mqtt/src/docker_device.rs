@@ -85,14 +85,15 @@ impl DockerDeviceProvider {
     ) -> Vec<Device> {
         let mut device_vec = Vec::new();
         for container in containers.into_iter() {
-            let container_name = container
-                .names
-                .clone()
-                .unwrap() // todo: check these unwraps
-                .first()
-                .unwrap() // todo: check these unwraps
-                .trim_start_matches('/')
-                .to_string();
+            let container_name = if let Some(name) = container.names.as_ref().and_then(|n| n.first()) {
+                name.trim_start_matches('/').to_string()
+            } else {
+                warn!(
+                    "Container {} has no name, skipping",
+                    container.id.as_deref().unwrap_or_default()
+                );
+                continue;
+            };
             let device_identifier = slugify(&container_name);
             let should_get_logs = Arc::new(AtomicBool::new(false));
             let log_text = Box::new(Sensor::new_simple(
@@ -360,15 +361,11 @@ impl DeviceProvider for DockerDeviceProvider {
             )
             .await??
             .into_iter()
-            .map(|c| {
-                let container_name = c
-                    .names
-                    .unwrap() // todo: check these unwraps
-                    .first()
-                    .unwrap() // todo: check these unwraps
-                    .trim_start_matches('/')
-                    .to_string();
-                slugify(&container_name)
+            .filter_map(|c| {
+                c.names
+                    .as_ref()
+                    .and_then(|names| names.first())
+                    .map(|name| slugify(name.trim_start_matches('/')))
             })
             .collect::<Vec<String>>();
         let devices_ids_to_remove = devices
@@ -403,16 +400,14 @@ impl DeviceProvider for DockerDeviceProvider {
         let new_containers = containers
             .into_iter()
             .filter(|c| {
-                let container_name = c
-                    .names
+                c.names
                     .as_ref()
-                    .unwrap() // todo: check these unwraps
-                    .first()
-                    .unwrap() // todo: check these unwraps
-                    .trim_start_matches('/')
-                    .to_string();
-                let device_identifier = slugify(&container_name);
-                !current_devices_id.contains(&device_identifier)
+                    .and_then(|names| names.first())
+                    .map(|name| {
+                        let device_identifier = slugify(name.trim_start_matches('/'));
+                        !current_devices_id.contains(&device_identifier)
+                    })
+                    .unwrap_or(false)
             })
             .collect::<Vec<ContainerSummary>>();
         if new_containers.is_empty() {
@@ -716,21 +711,42 @@ impl HandlesData for ContainerStatus {
                 Some(InspectContainerOptionsBuilder::new().build()),
             ))
             .await??;
-        let state = inspect.state.unwrap();
+
+        let state = if let Some(s) = inspect.state {
+            s
+        } else {
+            warn!(
+                "Container {} has no state information, skipping status update.",
+                self.container_name
+            );
+            return Ok(HashMap::new()); // No state, so no status to report
+        };
+
         let is_running = [state.running, state.paused, state.restarting]
             .into_iter()
             .any(|s| s == Some(true));
+
         let mut map = hashmap! {
-            self.state_topic.clone() => state.status.unwrap().to_string(),
             self.start_button_availability_topic.clone() => if is_running { "offline" } else { "online" }.to_string(),
             self.restart_button_availability_topic.clone() => if is_running { "online" } else { "offline" }.to_string(),
             self.stop_button_availability_topic.clone() => if is_running { "online" } else { "offline" }.to_string(),
         };
+
+        if let Some(status) = state.status {
+            map.insert(self.state_topic.clone(), status.to_string());
+        } else {
+            warn!(
+                "Container {} has no status, skipping status topic update.",
+                self.container_name
+            );
+        }
+
         let health = state
             .health
             .unwrap_or_default()
             .status
             .unwrap_or(HealthStatusEnum::EMPTY);
+
         if !matches!(health, HealthStatusEnum::EMPTY) {
             map.insert(self.health_topic.clone(), health.to_string());
         }
@@ -801,7 +817,8 @@ impl HandlesData for ContainerStats {
                 Some(InspectContainerOptionsBuilder::new().build()),
             ))
             .await??;
-        if !inspect.state.unwrap().running.unwrap_or(false) {
+
+        if !inspect.state.and_then(|s| s.running).unwrap_or(false) {
             *self.last_cpu_stats.write().await = None;
             return Ok(hashmap! {
                 self.used_memory_state_topic.clone() => "".to_string(),
@@ -813,16 +830,16 @@ impl HandlesData for ContainerStats {
             Some(StatsOptionsBuilder::new().stream(false).one_shot(true).build()),
         );
         let stats = stats_stream.try_collect::<Vec<_>>().await?;
-        if stats.is_empty() {
-            return Err(Error::NoStats.into());
+        if let Some(stat) = stats.into_iter().next() {
+            let used_memory = self.get_memory(&stat)?;
+            let used_cpu = self.get_cpu(&stat).await?;
+            Ok(hashmap! {
+                self.used_memory_state_topic.clone() => used_memory,
+                self.used_cpu_state_topic.clone() => used_cpu.unwrap_or("".to_string())
+            })
+        } else {
+            Err(Error::NoStats.into())
         }
-        let stat = stats.into_iter().next().unwrap();
-        let used_memory = self.get_memory(&stat)?;
-        let used_cpu = self.get_cpu(&stat).await?;
-        Ok(hashmap! {
-            self.used_memory_state_topic.clone() => used_memory,
-            self.used_cpu_state_topic.clone() => used_cpu.unwrap_or("".to_string())
-        })
     }
 }
 
@@ -1014,8 +1031,11 @@ mod tests {
     use super::*;
     use bollard::{
         container::LogOutput,
-        models::ContainerSummary,
-        secret::{ContainerCpuStats, ContainerCpuUsage, ContainerInspectResponse, ContainerMemoryStats},
+        models::{ContainerStateStatusEnum, ContainerSummary, SystemDataUsageResponse, SystemInfo},
+        secret::{
+            ContainerCpuStats, ContainerCpuUsage, ContainerInspectResponse, ContainerMemoryStats,
+            ContainerSummaryStateEnum, HealthStatusEnum,
+        },
     };
     use docker_client::MockDocker;
     use futures::stream;
@@ -1511,5 +1531,387 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(0, removed.len());
+    }
+
+    #[tokio::test]
+    async fn test_disk_free_get_entity_data_success() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker.expect_df().returning(|_| {
+            Ok(SystemDataUsageResponse {
+                images: Some(vec![
+                    bollard::models::ImageSummary {
+                        size: 1024 * 1024, // 1MB
+                        containers: 1,
+                        ..Default::default()
+                    },
+                    bollard::models::ImageSummary {
+                        size: 2048 * 1024, // 2MB
+                        containers: 0,
+                        ..Default::default()
+                    },
+                ]),
+                volumes: Some(vec![
+                    bollard::models::Volume {
+                        usage_data: Some(bollard::models::VolumeUsageData {
+                            size: 4096 * 1024, // 4MB
+                            ref_count: 1,
+                        }),
+                        ..Default::default()
+                    },
+                    bollard::models::Volume {
+                        usage_data: Some(bollard::models::VolumeUsageData {
+                            size: 8192 * 1024, // 8MB
+                            ref_count: 0,
+                        }),
+                        ..Default::default()
+                    },
+                ]),
+                build_cache: Some(vec![
+                    bollard::models::BuildCache {
+                        size: Some(16384 * 1024), // 16MB
+                        in_use: Some(true),
+                        ..Default::default()
+                    },
+                    bollard::models::BuildCache {
+                        size: Some(32768 * 1024), // 32MB
+                        in_use: Some(false),
+                        ..Default::default()
+                    },
+                ]),
+                containers: Some(vec![
+                    ContainerSummary {
+                        size_rw: Some(65536 * 1024), // 64MB
+                        state: Some(ContainerSummaryStateEnum::RUNNING),
+                        ..Default::default()
+                    },
+                    ContainerSummary {
+                        size_rw: Some(131072 * 1024), // 128MB
+                        state: Some(ContainerSummaryStateEnum::EXITED),
+                        ..Default::default()
+                    },
+                ]),
+                ..Default::default()
+            })
+        });
+
+        let disk_free = DiskFree {
+            docker: mock_docker,
+            images_state_topic: "images/state".to_string(),
+            images_attributes_state_topic: "images/attributes".to_string(),
+            volumes_state_topic: "volumes/state".to_string(),
+            volumes_attributes_state_topic: "volumes/attributes".to_string(),
+            build_cache_state_topic: "build_cache/state".to_string(),
+            build_cache_attributes_state_topic: "build_cache/attributes".to_string(),
+            number_of_containers_state_topic: "containers/state".to_string(),
+            number_of_containers_attributes_state_topic: "containers/attributes".to_string(),
+        };
+
+        let data = disk_free.get_entity_data(CancellationToken::default()).await.unwrap();
+
+        assert_eq!(data.get("images/state").unwrap(), "2");
+        let images_attrs: serde_json::Value = serde_json::from_str(data.get("images/attributes").unwrap()).unwrap();
+        assert_eq!(images_attrs["images_active"], 1);
+        assert_eq!(images_attrs["images_size_kib"], (3072 * 1024 / 1024));
+        assert_eq!(images_attrs["images_reclaimable_kib"], (2048 * 1024 / 1024));
+
+        assert_eq!(data.get("volumes/state").unwrap(), "2");
+        let volumes_attrs: serde_json::Value = serde_json::from_str(data.get("volumes/attributes").unwrap()).unwrap();
+        assert_eq!(volumes_attrs["volumes_active"], 1);
+        assert_eq!(volumes_attrs["volumes_size_kib"], (12288 * 1024 / 1024));
+        assert_eq!(volumes_attrs["volumes_reclaimable_kib"], (8192 * 1024 / 1024));
+
+        assert_eq!(data.get("build_cache/state").unwrap(), "2");
+        let build_cache_attrs: serde_json::Value =
+            serde_json::from_str(data.get("build_cache/attributes").unwrap()).unwrap();
+        assert_eq!(build_cache_attrs["build_caches_active"], 1);
+        assert_eq!(build_cache_attrs["build_caches_size_kib"], (49152 * 1024 / 1024));
+        assert_eq!(build_cache_attrs["build_caches_reclaimable_kib"], (32768 * 1024 / 1024));
+
+        assert_eq!(data.get("containers/state").unwrap(), "2");
+        let containers_attrs: serde_json::Value =
+            serde_json::from_str(data.get("containers/attributes").unwrap()).unwrap();
+        assert_eq!(containers_attrs["containers_active"], 1);
+        assert_eq!(containers_attrs["containers_size_kib"], (196608 * 1024 / 1024));
+        assert_eq!(containers_attrs["containers_reclaimable_kib"], (131072 * 1024 / 1024));
+    }
+
+    #[tokio::test]
+    async fn test_disk_free_get_entity_data_empty() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker
+            .expect_df()
+            .returning(|_| Ok(SystemDataUsageResponse::default()));
+
+        let disk_free = DiskFree {
+            docker: mock_docker,
+            images_state_topic: "images/state".to_string(),
+            images_attributes_state_topic: "images/attributes".to_string(),
+            volumes_state_topic: "volumes/state".to_string(),
+            volumes_attributes_state_topic: "volumes/attributes".to_string(),
+            build_cache_state_topic: "build_cache/state".to_string(),
+            build_cache_attributes_state_topic: "build_cache/attributes".to_string(),
+            number_of_containers_state_topic: "containers/state".to_string(),
+            number_of_containers_attributes_state_topic: "containers/attributes".to_string(),
+        };
+
+        let data = disk_free.get_entity_data(CancellationToken::default()).await.unwrap();
+
+        assert!(data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_container_status_get_entity_data_running() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker.expect_inspect_container().returning(|_, _| {
+            Ok(ContainerInspectResponse {
+                state: Some(bollard::models::ContainerState {
+                    running: Some(true),
+                    status: Some(ContainerStateStatusEnum::RUNNING),
+                    health: Some(bollard::models::Health {
+                        status: Some(HealthStatusEnum::HEALTHY),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        });
+
+        let container_status = ContainerStatus {
+            state_topic: "status/state".to_string(),
+            docker: mock_docker,
+            container_name: "test_container".to_string(),
+            cancellation_token: CancellationToken::default(),
+            start_button_availability_topic: "start/avail".to_string(),
+            restart_button_availability_topic: "restart/avail".to_string(),
+            stop_button_availability_topic: "stop/avail".to_string(),
+            health_topic: "health/state".to_string(),
+        };
+
+        let data = container_status
+            .get_entity_data(CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert_eq!(data.get("status/state").unwrap(), "running");
+        assert_eq!(data.get("health/state").unwrap(), "healthy");
+        assert_eq!(data.get("start/avail").unwrap(), "offline");
+        assert_eq!(data.get("restart/avail").unwrap(), "online");
+        assert_eq!(data.get("stop/avail").unwrap(), "online");
+    }
+
+    #[tokio::test]
+    async fn test_container_status_get_entity_data_stopped() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker.expect_inspect_container().returning(|_, _| {
+            Ok(ContainerInspectResponse {
+                state: Some(bollard::models::ContainerState {
+                    running: Some(false),
+                    status: Some(ContainerStateStatusEnum::EXITED),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        });
+
+        let container_status = ContainerStatus {
+            state_topic: "status/state".to_string(),
+            docker: mock_docker,
+            container_name: "test_container".to_string(),
+            cancellation_token: CancellationToken::default(),
+            start_button_availability_topic: "start/avail".to_string(),
+            restart_button_availability_topic: "restart/avail".to_string(),
+            stop_button_availability_topic: "stop/avail".to_string(),
+            health_topic: "health/state".to_string(),
+        };
+
+        let data = container_status
+            .get_entity_data(CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert_eq!(data.get("status/state").unwrap(), "exited");
+        assert!(!data.contains_key("health/state"));
+        assert_eq!(data.get("start/avail").unwrap(), "online");
+        assert_eq!(data.get("restart/avail").unwrap(), "offline");
+        assert_eq!(data.get("stop/avail").unwrap(), "offline");
+    }
+
+    #[tokio::test]
+    async fn test_network_info_get_entity_data_success() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker.expect_list_networks().returning(|_| {
+            Ok(vec![
+                bollard::models::Network {
+                    name: Some("bridge".to_string()),
+                    ..Default::default()
+                },
+                bollard::models::Network {
+                    name: Some("host".to_string()),
+                    ..Default::default()
+                },
+            ])
+        });
+
+        let network_info = NetworkInfo {
+            state_topic: "network/state".to_string(),
+            state_attributes_topic: "network/attributes".to_string(),
+            docker: mock_docker,
+        };
+
+        let data = network_info
+            .get_entity_data(CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert_eq!(data.get("network/state").unwrap(), "2");
+        let attrs: serde_json::Value = serde_json::from_str(data.get("network/attributes").unwrap()).unwrap();
+        let networks = attrs["networks"].as_array().unwrap();
+        assert_eq!(networks.len(), 2);
+        assert!(networks.contains(&serde_json::Value::String("bridge".to_string())));
+        assert!(networks.contains(&serde_json::Value::String("host".to_string())));
+    }
+
+    #[tokio::test]
+    async fn test_host_version_get_entity_data_success() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker.expect_info().returning(|| {
+            Ok(SystemInfo {
+                server_version: Some("20.10.7".to_string()),
+                ..Default::default()
+            })
+        });
+
+        let host_version = HostVersion {
+            state_topic: "version/state".to_string(),
+            docker: mock_docker,
+        };
+
+        let data = host_version
+            .get_entity_data(CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert_eq!(data.get("version/state").unwrap(), "20.10.7");
+    }
+
+    #[tokio::test]
+    async fn test_restart_button_handle_command() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker
+            .expect_restart_container()
+            .with(mockall::predicate::eq("test_container"), mockall::predicate::always())
+            .returning(|_, _| Ok(()));
+
+        let mut restart_button = RestartButton {
+            command_topic: "restart/command".to_string(),
+            docker: mock_docker,
+            container_name: "test_container".to_string(),
+        };
+
+        let result = restart_button
+            .do_handle_command("restart/command", "PRESS", CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert!(result.handled);
+    }
+
+    #[tokio::test]
+    async fn test_start_button_handle_command() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker
+            .expect_start_container()
+            .with(mockall::predicate::eq("test_container"), mockall::predicate::always())
+            .returning(|_, _| Ok(()));
+
+        let mut start_button = StartButton {
+            command_topic: "start/command".to_string(),
+            docker: mock_docker,
+            container_name: "test_container".to_string(),
+        };
+
+        let result = start_button
+            .do_handle_command("start/command", "PRESS", CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert!(result.handled);
+    }
+
+    #[tokio::test]
+    async fn test_stop_button_handle_command() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker
+            .expect_stop_container()
+            .with(mockall::predicate::eq("test_container"), mockall::predicate::always())
+            .returning(|_, _| Ok(()));
+
+        let mut stop_button = StopButton {
+            command_topic: "stop/command".to_string(),
+            docker: mock_docker,
+            container_name: "test_container".to_string(),
+        };
+
+        let result = stop_button
+            .do_handle_command("stop/command", "PRESS", CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert!(result.handled);
+    }
+
+    #[tokio::test]
+    async fn test_remove_button_handle_command() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker
+            .expect_stop_container()
+            .with(mockall::predicate::eq("test_container"), mockall::predicate::always())
+            .returning(|_, _| Ok(()));
+
+        mock_docker
+            .expect_remove_container()
+            .with(mockall::predicate::eq("test_container"), mockall::predicate::always())
+            .returning(|_, _| Ok(()));
+
+        let mut remove_button = RemoveButton {
+            command_topic: "remove/command".to_string(),
+            docker: mock_docker,
+            container_name: "test_container".to_string(),
+        };
+
+        let result = remove_button
+            .do_handle_command("remove/command", "PRESS", CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert!(result.handled);
+    }
+
+    #[tokio::test]
+    async fn test_get_logs_button_handle_command() {
+        let should_get_logs = Arc::new(AtomicBool::new(false));
+        let mut get_logs_button = GetLogsButton {
+            command_topic: "logs/command".to_string(),
+            should_get_logs: should_get_logs.clone(),
+        };
+
+        let result = get_logs_button
+            .do_handle_command("logs/command", "PRESS", CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert!(result.handled);
+        assert!(should_get_logs.load(std::sync::atomic::Ordering::SeqCst));
     }
 }
