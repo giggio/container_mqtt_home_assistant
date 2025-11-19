@@ -126,7 +126,7 @@ impl Device {
     }
 
     pub async fn get_entities_data(&self) -> Result<HashMap<String, String>> {
-        let mut entities_data = HashMap::<String, String>::with_capacity(self.entities.len());
+        let mut entities_data = HashMap::<String, String>::with_capacity(self.data_handlers.len());
         for data_handler in self.data_handlers.iter() {
             let provider_data = data_handler.get_entity_data(self.cancellation_token.clone()).await?;
             entities_data.extend(provider_data);

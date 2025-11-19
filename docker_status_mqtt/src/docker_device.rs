@@ -720,17 +720,17 @@ impl HandlesData for ContainerStatus {
         let is_running = [state.running, state.paused, state.restarting]
             .into_iter()
             .any(|s| s == Some(true));
-        let health = state
-            .health
-            .unwrap_or_default()
-            .status
-            .unwrap_or(HealthStatusEnum::EMPTY);
         let mut map = hashmap! {
             self.state_topic.clone() => state.status.unwrap().to_string(),
             self.start_button_availability_topic.clone() => if is_running { "offline" } else { "online" }.to_string(),
             self.restart_button_availability_topic.clone() => if is_running { "online" } else { "offline" }.to_string(),
             self.stop_button_availability_topic.clone() => if is_running { "online" } else { "offline" }.to_string(),
         };
+        let health = state
+            .health
+            .unwrap_or_default()
+            .status
+            .unwrap_or(HealthStatusEnum::EMPTY);
         if !matches!(health, HealthStatusEnum::EMPTY) {
             map.insert(self.health_topic.clone(), health.to_string());
         }

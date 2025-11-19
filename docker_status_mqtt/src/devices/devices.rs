@@ -140,9 +140,7 @@ impl Devices {
             trace!("Getting entities data for device: {}", device.details.name);
             let data = device.get_entities_data().await?;
             trace!("Got entities data for device: {}: {data:?}", device.details.name);
-            for entity_data in data.into_iter() {
-                entities_data.insert(entity_data.0.clone(), entity_data.1.clone());
-            }
+            entities_data.extend(data);
         }
         Ok(entities_data)
     }

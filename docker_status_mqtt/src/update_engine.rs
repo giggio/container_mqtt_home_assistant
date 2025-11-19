@@ -80,8 +80,8 @@ impl TimedUpdateEventProvider {
         devices: &Devices,
         cancellation_token: CancellationToken,
         publish_interval: Duration,
+        last_messages: Arc<Mutex<HashMap<String, String>>>,
     ) -> impl Stream<Item = Result<Vec<UpdateEvent>>> {
-        let last_messages = Arc::new(Mutex::new(HashMap::<String, String>::new()));
         stream! {
             let mut interval = time::interval(publish_interval);
             interval.tick().await; // to set the initial instant
@@ -112,6 +112,7 @@ impl TimedUpdateEventProvider {
         availability_topic: String,
         cancellation_token: CancellationToken,
         publish_interval: Duration,
+        last_messages: Arc<Mutex<HashMap<String, String>>>,
     ) -> impl Stream<Item = Result<Vec<UpdateEvent>>> {
         stream! {
             let mut interval = time::interval(publish_interval);
@@ -128,6 +129,7 @@ impl TimedUpdateEventProvider {
                     devices,
                     availability_topic.clone(),
                     cancellation_token.clone(),
+                    last_messages.clone(),
                 ).await {
                     Ok(events) => {
                         if !events.is_empty() {
@@ -150,6 +152,7 @@ async fn get_new_and_removed_devices_events_from_device_managers(
     devices: &Devices,
     availability_topic: String,
     cancellation_token: CancellationToken,
+    last_messages: Arc<Mutex<HashMap<String, String>>>,
 ) -> Result<Vec<UpdateEvent>> {
     let (added, removed) = device_providers
         .iter()
@@ -175,6 +178,25 @@ async fn get_new_and_removed_devices_events_from_device_managers(
                 (added, removed)
             },
         );
+
+    let removed_topic_prefixes = removed
+        .iter()
+        .async_map(async |device| device.read().await)
+        .await
+        .iter()
+        .flat_map(|removed_device| {
+            removed_device
+                .entities
+                .iter()
+                .map(|entity| entity.details().get_topic_path(None))
+        })
+        .collect::<HashSet<_>>();
+    last_messages.lock().await.retain(|key, _| {
+        removed_topic_prefixes
+            .iter()
+            .all(|topic_prefix| !key.starts_with(topic_prefix))
+    });
+
     let mut events = vec![];
     if !added.is_empty() {
         events.push(UpdateEvent::DevicesCreated(added));
@@ -263,6 +285,7 @@ pub async fn create_event_producers(
     cancellation_token: CancellationToken,
     publish_interval: Duration,
 ) -> impl Stream<Item = Result<Vec<UpdateEvent>>> {
+    let last_messages = Arc::new(Mutex::new(HashMap::<String, String>::new()));
     futures::stream::select_all([
         TimedUpdateEventProvider::create_devices_created_and_removed_event_producer(
             device_providers.clone(),
@@ -270,10 +293,16 @@ pub async fn create_event_producers(
             availability_topic.clone(),
             cancellation_token.clone(),
             publish_interval,
+            last_messages.clone(),
         )
         .boxed(),
-        TimedUpdateEventProvider::create_entity_update_event_producer(devices, cancellation_token, publish_interval)
-            .boxed(),
+        TimedUpdateEventProvider::create_entity_update_event_producer(
+            devices,
+            cancellation_token,
+            publish_interval,
+            last_messages,
+        )
+        .boxed(),
     ])
 }
 
@@ -441,6 +470,7 @@ mod tests {
             &devices,
             CancellationToken::default(),
             Duration::from_millis(1),
+            Arc::new(Mutex::new(HashMap::<String, String>::new())),
         );
         let mut event_producer = pin!(event_producer);
         let first_event = event_producer.next().await.unwrap().unwrap(); // First call to populate last_messages
