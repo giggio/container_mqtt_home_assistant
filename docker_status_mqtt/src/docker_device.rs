@@ -171,7 +171,6 @@ impl DockerDeviceProvider {
                 stop_button_availability_topic: stop_button.details().get_topic_for_availability(None),
                 docker: self.docker.clone(),
                 container_name: container_name.clone(),
-                cancellation_token: cancellation_token.clone(),
             });
             let container_image: Box<Sensor> = EntityDetails::new(&device_identifier, "Image", "mdi:oci").into();
             let container_static_data = Box::new(ContainerStaticData {
@@ -237,21 +236,13 @@ impl DeviceProvider for DockerDeviceProvider {
         availability_topic: String,
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<Devices> {
-        let containers = self
-            .docker
-            .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build()))
-            .await?;
-        // todo: improve device for the docker host
+        let containers = cancellation_token
+            .wait_on(
+                self.docker
+                    .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build())),
+            )
+            .await??;
         let host_identifier = slugify(&self.provider_name);
-        // let number_of_containers = Box::new(Sensor::new_simple(
-        //     host_identifier.clone(),
-        //     "Total containers",
-        //     "mdi:truck-cargo-container",
-        // ));
-        // let number_of_containers_data = Box::new(NumberOfContainers {
-        //     state_topic: number_of_containers.details().get_topic_for_state(None),
-        //     docker: self.docker.clone(),
-        // });
         let host_version = Box::new(Sensor::new_simple(
             host_identifier.clone(),
             "Host version",
@@ -440,19 +431,22 @@ struct LogText {
 impl HandlesData for LogText {
     async fn get_entity_data(
         &self,
-        _cancellation_token: CancellationToken,
+        cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
         if !self.should_get_logs.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(HashMap::new());
         }
         self.should_get_logs.store(false, std::sync::atomic::Ordering::SeqCst);
-        let logs = self.docker.logs(
-            &self.container_name,
-            Some(LogsOptionsBuilder::new().stdout(true).stderr(true).tail("3").build()),
+        let logs = cancellation_token.wait_on(
+            self.docker
+                .logs(
+                    &self.container_name,
+                    Some(LogsOptionsBuilder::new().stdout(true).stderr(true).tail("3").build()),
+                )
+                .try_collect::<Vec<_>>(),
         );
         let mut logs: String = logs
-            .try_collect::<Vec<_>>()
-            .await?
+            .await??
             .into_iter()
             .map(|log| log.to_string())
             .collect::<Vec<String>>()
@@ -667,32 +661,11 @@ impl HandlesData for DiskFree {
     }
 }
 
-// #[derive(Debug)]
-// struct NumberOfContainers {
-//     state_topic: String,
-//     docker: Docker,
-// }
-// #[async_trait]
-// impl HandlesData for NumberOfContainers {
-//     async fn get_entity_data(
-//         &self,
-//         _cancellation_token: CancellationToken,
-//     ) -> crate::devices::Result<HashMap<String, String>> {
-//         let count = self
-//             .docker
-//             .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build()))
-//             .await?
-//             .len();
-//         Ok(hashmap! {self.state_topic.clone() => count.to_string()})
-//     }
-// }
-
 #[derive(Debug)]
 struct ContainerStatus {
     state_topic: String,
     docker: Docker,
     container_name: String,
-    cancellation_token: CancellationToken,
     start_button_availability_topic: String,
     restart_button_availability_topic: String,
     stop_button_availability_topic: String,
@@ -702,10 +675,9 @@ struct ContainerStatus {
 impl HandlesData for ContainerStatus {
     async fn get_entity_data(
         &self,
-        _cancellation_token: CancellationToken,
+        cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
-        let inspect = self
-            .cancellation_token
+        let inspect = cancellation_token
             .wait_on(self.docker.inspect_container(
                 &self.container_name,
                 Some(InspectContainerOptionsBuilder::new().build()),
@@ -825,11 +797,16 @@ impl HandlesData for ContainerStats {
                 self.used_cpu_state_topic.clone() => "".to_string()
             });
         }
-        let stats_stream = self.docker.stats(
-            &self.container_name,
-            Some(StatsOptionsBuilder::new().stream(false).one_shot(true).build()),
-        );
-        let stats = stats_stream.try_collect::<Vec<_>>().await?;
+        let stats = cancellation_token
+            .wait_on(
+                self.docker
+                    .stats(
+                        &self.container_name,
+                        Some(StatsOptionsBuilder::new().stream(false).one_shot(true).build()),
+                    )
+                    .try_collect::<Vec<_>>(),
+            )
+            .await??;
         if let Some(stat) = stats.into_iter().next() {
             let used_memory = self.get_memory(&stat)?;
             let used_cpu = self.get_cpu(&stat).await?;
@@ -1684,7 +1661,6 @@ mod tests {
             state_topic: "status/state".to_string(),
             docker: mock_docker,
             container_name: "test_container".to_string(),
-            cancellation_token: CancellationToken::default(),
             start_button_availability_topic: "start/avail".to_string(),
             restart_button_availability_topic: "restart/avail".to_string(),
             stop_button_availability_topic: "stop/avail".to_string(),
@@ -1722,7 +1698,6 @@ mod tests {
             state_topic: "status/state".to_string(),
             docker: mock_docker,
             container_name: "test_container".to_string(),
-            cancellation_token: CancellationToken::default(),
             start_button_availability_topic: "start/avail".to_string(),
             restart_button_availability_topic: "restart/avail".to_string(),
             stop_button_availability_topic: "stop/avail".to_string(),
