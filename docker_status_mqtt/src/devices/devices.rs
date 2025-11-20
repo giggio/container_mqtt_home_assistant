@@ -234,3 +234,203 @@ impl Devices {
             .collect::<Vec<_>>())
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devices::MockHandlesData;
+    use crate::devices::test_helpers::*;
+    use pretty_assertions::assert_eq;
+    use std::future;
+
+    #[tokio::test]
+    async fn test_new_from_many_devices() {
+        let device1 = make_device_with_identifier("device1");
+        let device2 = make_device_with_identifier("device2");
+        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+
+        assert_eq!(devices.len().await, 2);
+        assert!(devices.get("device1").await.is_some());
+        assert!(devices.get("device2").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_new_from_many_shared_devices() {
+        let device1 = Arc::new(RwLock::new(make_device_with_identifier("device1")));
+        let device2 = Arc::new(RwLock::new(make_device_with_identifier("device2")));
+        let devices = Devices::new_from_many_shared_devices(vec![device1, device2], CancellationToken::default()).await;
+
+        assert_eq!(devices.len().await, 2);
+        assert!(devices.get("device1").await.is_some());
+        assert!(devices.get("device2").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_new_from_single_device() {
+        let device = make_device_with_identifier("device1");
+        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+
+        assert_eq!(devices.len().await, 1);
+        assert!(devices.get("device1").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_iter() {
+        let device1 = make_device_with_identifier("device1");
+        let device2 = make_device_with_identifier("device2");
+        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+
+        let iterated_devices = devices.iter().await;
+        assert_eq!(iterated_devices.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_into_iter() {
+        let device1 = make_device_with_identifier("device1");
+        let device2 = make_device_with_identifier("device2");
+        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+
+        let iterated_devices: Vec<_> = devices.into_iter().unwrap().collect();
+        assert_eq!(iterated_devices.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_into_vec() {
+        let device1 = make_device_with_identifier("device1");
+        let device2 = make_device_with_identifier("device2");
+        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+
+        let vec_devices = devices.into_vec().await.unwrap();
+        assert_eq!(vec_devices.len(), 2);
+        assert!(vec_devices.iter().any(|d| d.details.identifier == "device1"));
+        assert!(vec_devices.iter().any(|d| d.details.identifier == "device2"));
+    }
+
+    #[tokio::test]
+    async fn test_identifiers() {
+        let device1 = make_device_with_identifier("device1");
+        let device2 = make_device_with_identifier("device2");
+        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+
+        let identifiers = devices.identifiers().await;
+        assert_eq!(identifiers.len(), 2);
+        assert!(identifiers.contains("device1"));
+        assert!(identifiers.contains("device2"));
+    }
+
+    #[tokio::test]
+    async fn test_create_discovery_info() {
+        let mut device = make_device_with_identifier("device1");
+        device.entities.push(Box::new(make_mock_entity()));
+        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+
+        let discovery_info = devices.create_discovery_info("homeassistant").await.unwrap();
+        assert_eq!(discovery_info.len(), 1);
+
+        let payload = discovery_info.get("homeassistant/device/device1/config").unwrap();
+        let json: serde_json::Value = serde_json::from_str(payload).unwrap();
+
+        assert_eq!(json["device"]["identifiers"][0], "device1");
+        assert_eq!(json["components"]["test"], true);
+    }
+
+    #[tokio::test]
+    async fn test_discovery_topics() {
+        let device = make_device_with_identifier("device1");
+        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+
+        let topics = devices.discovery_topics("homeassistant").await;
+        assert_eq!(topics.len(), 1);
+        assert!(topics[0].contains("device1"));
+    }
+
+    #[tokio::test]
+    async fn test_command_topics() {
+        let mut device = make_device_with_identifier("device1");
+        device.entities.push(Box::new(make_mock_entity()));
+        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+
+        let topics = devices.command_topics().await;
+        assert!(!topics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_entities_data() {
+        let mut device = make_device_with_identifier("device1");
+        device.data_handlers.push(Box::new(make_mock_data_handler()));
+        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+
+        let data = devices.get_entities_data().await.unwrap();
+        assert_eq!(1, data.len());
+        assert!(data.contains_key("dev1/test_name/state"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_command() {
+        let mut device = make_device_with_identifier("device1");
+        let mut data_handler = MockHandlesData::new();
+        data_handler.expect_handle_command().returning(|_, _, _| {
+            Box::pin(future::ready(Ok(crate::device_manager::CommandResult {
+                handled: true,
+                state_update_topics: Some(hashmap! {
+                    "state_topic".to_string() => "new_state".to_string()
+                }),
+            })))
+        });
+        device.data_handlers.push(Box::new(data_handler));
+        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+
+        let result = devices
+            .handle_command(&PublishResult {
+                topic: "device1/test_name/command".to_string(),
+                payload: "payload".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("state_topic").unwrap(), "new_state");
+    }
+
+    #[tokio::test]
+    async fn test_filter() {
+        let device1 = make_device_with_identifier("device1");
+        let device2 = make_device_with_identifier("device2");
+        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+
+        let filtered = devices.filter(HashSet::from(["device1".to_string()])).await;
+        assert_eq!(filtered.len().await, 1);
+        assert!(filtered.get("device1").await.is_some());
+        assert!(filtered.get("device2").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_add_devices() {
+        let device1 = make_device_with_identifier("device1");
+        let devices = Devices::new_from_single_device(device1, CancellationToken::default());
+
+        let device2 = make_device_with_identifier("device2");
+        devices.add_devices(vec![device2]).await.unwrap();
+
+        assert_eq!(devices.len().await, 2);
+        assert!(devices.get("device1").await.is_some());
+        assert!(devices.get("device2").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_remove_devices() {
+        let device1 = make_device_with_identifier("device1");
+        let device2 = make_device_with_identifier("device2");
+        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+
+        let removed = devices
+            .remove_devices(&vec!["device1".to_string()].into_iter().collect())
+            .await
+            .unwrap();
+
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].read().await.details.identifier, "device1");
+        assert_eq!(devices.len().await, 1);
+        assert!(devices.get("device1").await.is_none());
+        assert!(devices.get("device2").await.is_some());
+    }
+}
