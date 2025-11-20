@@ -743,13 +743,13 @@ impl ConnectionManager {
             let other_mqtt_device = device_manager.clone();
             let other_device_provider = device_providers.clone();
             self.join_handle = Some(tokio::spawn(async move {
-                let _publish_sensor_data_result = Self::publish_sensor_data_in_a_loop(
+                Self::publish_sensor_data_in_a_loop(
                     other_mqtt_device,
                     other_device_provider,
                     devices_clone.clone(),
                     cancellation_token,
                 )
-                .await; // todo: handle result
+                .await;
             }));
         } else {
             trace!("Channel received Disconnected message");
@@ -763,13 +763,13 @@ impl ConnectionManager {
         device_providers: Arc<Vec<Box<dyn DeviceProvider>>>,
         devices: Devices,
         cancellation_token: CancellationToken,
-    ) -> Result<()> {
+    ) {
         let mut event_producers = create_event_producers(
             &devices,
             device_providers,
             device_manager.availability_topic(),
             cancellation_token.clone(),
-            device_manager.publish_interval, // todo: take as param?
+            device_manager.publish_interval,
         )
         .await;
         while let Some(event_producer) = event_producers.next().await {
@@ -808,27 +808,37 @@ impl ConnectionManager {
                                         .join(", ");
                                     trace!("Removing device entities from Home Assistant, ids: {ids_list}...");
                                 }
-                                device_manager
+                                if let Err(err) = device_manager
                                     .publish_removed_entities_discovery(
                                         Devices::new_from_many_shared_devices(devices_vec, cancellation_token.clone())
                                             .await,
                                     )
-                                    .await?;
+                                    .await
+                                {
+                                    error!(category = "publish_sensor_data_in_a_loop"; "Error removing device entities from Home Assistant: {err}");
+                                }
                             }
                             UpdateEvent::DevicesCreated(new_device_ids) => {
                                 trace!("Publishing new device entities to Home Assistant...");
                                 let new_devices = devices.filter(new_device_ids).await;
-                                device_manager.publish_entities_discovery(new_devices.clone()).await?;
+                                if let Err(err) = device_manager.publish_entities_discovery(new_devices.clone()).await {
+                                    error!(category = "publish_sensor_data_in_a_loop"; "Error publishing new device entities to Home Assistant: {err}");
+                                    continue;
+                                }
                                 time::sleep(Duration::from_secs(1)).await;
-                                device_manager.subscribe_to_commands(new_devices).await?;
-                                device_manager.make_available().await?;
+                                if let Err(err) = device_manager.subscribe_to_commands(new_devices).await {
+                                    error!(category = "publish_sensor_data_in_a_loop"; "Error subscribing to new device command topics: {err}");
+                                    continue;
+                                }
+                                if let Err(err) = device_manager.make_available().await {
+                                    error!(category = "publish_sensor_data_in_a_loop"; "Error making new devices available to Home Assistant: {err}");
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        Ok(())
     }
 }
 
