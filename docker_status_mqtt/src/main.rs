@@ -32,7 +32,6 @@ use crate::{
     docker_device::DockerDeviceProvider,
     sample_device::SampleDeviceProvider,
 };
-// mod observer;
 mod docker_device;
 
 pub type Result<T> = std::result::Result<T, AppError>;
