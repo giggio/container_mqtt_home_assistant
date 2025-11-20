@@ -4,7 +4,7 @@ pub trait AsyncMap {
     async fn async_map<F, Fut, T, U>(self, f: F) -> Vec<U>
     where
         F: Fn(T) -> Fut,
-        Fut: std::future::Future<Output = U>,
+        Fut: Future<Output = U>,
         Self: Sized + IntoIterator<Item = T>,
     {
         futures::future::join_all(self.into_iter().map(f)).await
@@ -14,7 +14,7 @@ pub trait AsyncMap {
     async fn async_foreach<F, Fut, T, U>(self, f: F)
     where
         F: Fn(T) -> Fut,
-        Fut: std::future::Future<Output = U>,
+        Fut: Future<Output = U>,
         Self: Sized + IntoIterator<Item = T>,
     {
         futures::future::join_all(self.into_iter().map(f)).await;

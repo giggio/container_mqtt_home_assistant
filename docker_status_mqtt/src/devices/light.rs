@@ -53,7 +53,7 @@ impl Entity for Light {
         &'a self,
         device: &'a Device,
         _cancellation_token: CancellationToken,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<Value> {
         let json = json!({
             "platform": "light",
             "payload_on": self.payload_on,

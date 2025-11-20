@@ -28,7 +28,7 @@ mod text;
 pub mod test_helpers;
 
 pub type Result<T> = std::result::Result<T, Error>;
-type UtcDateTime = chrono::DateTime<chrono::Utc>;
+type UtcDateTime = chrono::DateTime<Utc>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -153,7 +153,7 @@ pub trait Entity: EntityDetailsGetter + Send + Sync + Debug {
         &'a self,
         device: &'a Device,
         cancellation_token: CancellationToken,
-    ) -> Result<serde_json::Value>;
+    ) -> Result<Value>;
 }
 
 impl PartialEq<dyn Entity> for Box<dyn Entity + '_> {
@@ -243,7 +243,7 @@ impl EntityDetails {
         basic_path
     }
 
-    pub async fn json_for_discovery(&self, device: &Device) -> Result<serde_json::Value> {
+    pub async fn json_for_discovery(&self, device: &Device) -> Result<Value> {
         let json = json!({
             "name": self.name,
             "unique_id": format!("{}_{}", device.details.identifier, self.id),

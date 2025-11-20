@@ -48,7 +48,7 @@ impl Entity for Text {
         &'a self,
         device: &'a Device,
         _cancellation_token: CancellationToken,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<Value> {
         let json = json!({
             "platform": "text",
             "command_topic": self.command_topic,

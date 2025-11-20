@@ -637,9 +637,9 @@ impl DeviceManager {
             .await??)
     }
 
-    async fn run_with_cancellation_and_timeout<F>(&self, future: F) -> Result<<F as std::future::IntoFuture>::Output>
+    async fn run_with_cancellation_and_timeout<F>(&self, future: F) -> Result<<F as IntoFuture>::Output>
     where
-        F: std::future::IntoFuture,
+        F: IntoFuture,
     {
         let result = self
             .cancellation_token
@@ -887,16 +887,16 @@ mod mqtt_client {
     use std::pin::Pin;
     mockall::mock! {
         pub EventLoop {
-            pub fn poll(&mut self) -> Pin<Box<dyn std::future::Future<Output = std::result::Result<Event, ConnectionError>> + Send>>;
+            pub fn poll(&mut self) -> Pin<Box<dyn Future<Output = Result<Event, ConnectionError>> + Send>>;
         }
     }
     mockall::mock! {
         #[derive(Debug, Default)]
         pub AsyncClient {
             pub fn new(options: MqttOptions, capacity: usize) -> (Self, MockEventLoop);
-            pub fn publish(&self, topic: String, qos: QoS, retain: bool, payload: String) -> Pin<Box<dyn Future<Output = std::result::Result<(), ClientError>> + Send>>;
-            pub fn subscribe(&self, topic: String, qos: QoS) -> Pin<Box<dyn Future<Output = std::result::Result<(), ClientError>> + Send>>;
-            pub fn try_disconnect(&self) -> std::result::Result<(), ClientError>;
+            pub fn publish(&self, topic: String, qos: QoS, retain: bool, payload: String) -> Pin<Box<dyn Future<Output = Result<(), ClientError>> + Send>>;
+            pub fn subscribe(&self, topic: String, qos: QoS) -> Pin<Box<dyn Future<Output = Result<(), ClientError>> + Send>>;
+            pub fn try_disconnect(&self) -> Result<(), ClientError>;
         }
         impl Clone for AsyncClient {
             fn clone(&self) -> Self;

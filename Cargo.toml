@@ -2,8 +2,8 @@
 resolver = "3"
 members = ["docker_status_mqtt", "docker_status_mqtt_proc_macros"]
 
-# [workspace.lints.rust]
-# unused_qualifications = "warn"
+[workspace.lints.rust]
+unused_qualifications = "warn"
 
 [workspace.lints.clippy]
 unwrap_used = "warn"

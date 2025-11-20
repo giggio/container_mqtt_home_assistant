@@ -980,18 +980,18 @@ pub mod docker_client {
     mockall::mock! {
         #[derive(Debug)]
         pub Docker {
-            pub fn connect_with_socket_defaults() -> std::result::Result<Self, bollard::errors::Error>;
-            pub fn logs(&self, container_name: &str, options: Option<LogsOptions>) -> Pin<Box<dyn Stream<Item = std::result::Result<LogOutput, bollard::errors::Error>> + Send + 'static>>;
-            pub async fn list_containers(&self, options: Option<ListContainersOptions>) -> std::result::Result<Vec<ContainerSummary>, bollard::errors::Error>;
-            pub fn stats(&self, container_name: &str, options: Option<StatsOptions>) -> Pin<Box<dyn Stream<Item = std::result::Result<ContainerStatsResponse, bollard::errors::Error>> + Send + 'static>>;
-            pub async fn restart_container(&self, container_name: &str, options: Option<RestartContainerOptions>) -> std::result::Result<(), Error>;
-            pub async fn start_container(&self, container_name: &str, options: Option<StartContainerOptions>) -> std::result::Result<(), Error>;
-            pub async fn stop_container(&self, container_name: &str, options: Option<StopContainerOptions>) -> std::result::Result<(), Error>;
-            pub async fn remove_container(&self, container_name: &str, options: Option<RemoveContainerOptions>) -> std::result::Result<(), Error>;
-            pub async fn inspect_container(&self, container_name: &str, options: Option<InspectContainerOptions>) -> std::result::Result<ContainerInspectResponse, Error>;
-            pub async fn info(&self) -> std::result::Result<SystemInfo, Error>;
-            pub async fn df(&self, options: Option<DataUsageOptions>) -> std::result::Result<SystemDataUsageResponse, Error>;
-            pub async fn list_networks( &self, options: Option<ListNetworksOptions>) -> std::result::Result<Vec<Network>, Error>;
+            pub fn connect_with_socket_defaults() -> Result<Self, Error>;
+            pub fn logs(&self, container_name: &str, options: Option<LogsOptions>) -> Pin<Box<dyn Stream<Item = Result<LogOutput, Error>> + Send + 'static>>;
+            pub async fn list_containers(&self, options: Option<ListContainersOptions>) -> Result<Vec<ContainerSummary>, Error>;
+            pub fn stats(&self, container_name: &str, options: Option<StatsOptions>) -> Pin<Box<dyn Stream<Item = Result<ContainerStatsResponse, Error>> + Send + 'static>>;
+            pub async fn restart_container(&self, container_name: &str, options: Option<RestartContainerOptions>) -> Result<(), Error>;
+            pub async fn start_container(&self, container_name: &str, options: Option<StartContainerOptions>) -> Result<(), Error>;
+            pub async fn stop_container(&self, container_name: &str, options: Option<StopContainerOptions>) -> Result<(), Error>;
+            pub async fn remove_container(&self, container_name: &str, options: Option<RemoveContainerOptions>) -> Result<(), Error>;
+            pub async fn inspect_container(&self, container_name: &str, options: Option<InspectContainerOptions>) -> Result<ContainerInspectResponse, Error>;
+            pub async fn info(&self) -> Result<SystemInfo, Error>;
+            pub async fn df(&self, options: Option<DataUsageOptions>) -> Result<SystemDataUsageResponse, Error>;
+            pub async fn list_networks( &self, options: Option<ListNetworksOptions>) -> Result<Vec<Network>, Error>;
         }
 
         impl Clone for Docker {

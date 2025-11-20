@@ -141,7 +141,7 @@ impl Device {
         ))
     }
 
-    pub async fn json_for_discovery(&self) -> Result<serde_json::Value> {
+    pub async fn json_for_discovery(&self) -> Result<Value> {
         let mut device_json = json!({
             "device": self.details,
             "origin": self.origin,

@@ -40,7 +40,7 @@ async fn main() -> std::result::Result<(), String> {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        args::Commands::Run {
+        Commands::Run {
             mqtt_broker_info,
             device_name,
             sample_device_name,
@@ -104,7 +104,7 @@ pub enum AppError {
     #[error(transparent)]
     Logger(#[from] logger::Error),
     #[error(transparent)]
-    DeviceManager(#[from] device_manager::Error),
+    DeviceManager(#[from] Error),
     #[error(transparent)]
     Devices(#[from] devices::Error),
     #[error(transparent)]

@@ -112,9 +112,9 @@ impl CancellationToken {
     fn cancel(&mut self) {
         self.is_cancelled.store(true, Ordering::SeqCst);
     }
-    pub async fn wait_on<F>(&self, future: F) -> Result<<F as std::future::IntoFuture>::Output>
+    pub async fn wait_on<F>(&self, future: F) -> Result<<F as IntoFuture>::Output>
     where
-        F: std::future::IntoFuture,
+        F: IntoFuture,
     {
         if self.is_cancelled.load(Ordering::SeqCst) {
             trace!("CancellationToken already cancelled before wait_on");

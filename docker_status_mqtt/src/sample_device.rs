@@ -198,7 +198,7 @@ impl DeviceProvider for SampleDeviceProvider {
         &self,
         _devices: &Devices,
         _cancellation_token: CancellationToken,
-    ) -> crate::devices::Result<Vec<Arc<RwLock<Device>>>> {
+    ) -> Result<Vec<Arc<RwLock<Device>>>> {
         Ok(vec![])
     }
 
@@ -207,7 +207,7 @@ impl DeviceProvider for SampleDeviceProvider {
         _devices: &Devices,
         _availability_topic: String,
         _cancellation_token: CancellationToken,
-    ) -> crate::devices::Result<HashSet<String>> {
+    ) -> Result<HashSet<String>> {
         Ok(HashSet::new())
     }
 }
@@ -539,7 +539,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_device_json_for_discovery_sample_device() {
-        let provider = crate::sample_device::SampleDeviceProvider::new("Test Device").not_random();
+        let provider = SampleDeviceProvider::new("Test Device").not_random();
         let devices = provider
             .get_devices(
                 "device_manager_id/availability".to_owned(),
@@ -675,7 +675,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_device_get_entities_data() {
-        let provider = crate::sample_device::SampleDeviceProvider::new("Test Device").not_random();
+        let provider = SampleDeviceProvider::new("Test Device").not_random();
         let devices = provider
             .get_devices("test_device/availability".to_owned(), CancellationToken::default())
             .await

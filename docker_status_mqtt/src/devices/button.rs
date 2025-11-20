@@ -67,7 +67,7 @@ impl Entity for Button {
         &'a self,
         device: &'a Device,
         _cancellation_token: CancellationToken,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<Value> {
         let json = json!({
             "device_class": self.device_class,
             "platform": "button",
