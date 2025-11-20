@@ -1914,4 +1914,131 @@ mod tests {
         assert!(result.handled);
         assert!(should_get_logs.load(std::sync::atomic::Ordering::SeqCst));
     }
+
+    #[tokio::test]
+    async fn test_network_info_get_entity_data_empty() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker.expect_list_networks().returning(|_| Ok(vec![]));
+
+        let network_info = NetworkInfo {
+            state_topic: "network/state".to_string(),
+            state_attributes_topic: "network/attributes".to_string(),
+            docker: mock_docker,
+        };
+
+        let data = network_info
+            .get_entity_data(CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert_eq!(data.get("network/state").unwrap(), "0");
+        let attrs: serde_json::Value = serde_json::from_str(data.get("network/attributes").unwrap()).unwrap();
+        let networks = attrs["networks"].as_array().unwrap();
+        assert_eq!(networks.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_host_version_get_entity_data_missing_version() {
+        let mut mock_docker = MockDocker::new();
+
+        mock_docker.expect_info().returning(|| {
+            Ok(SystemInfo {
+                server_version: None,
+                ..Default::default()
+            })
+        });
+
+        let host_version = HostVersion {
+            state_topic: "version/state".to_string(),
+            docker: mock_docker,
+        };
+
+        let data = host_version
+            .get_entity_data(CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert_eq!(data.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_container_static_data_get_entity_data() {
+        let container_static_data = ContainerStaticData {
+            image: ("image/topic".to_string(), "nginx:latest".to_string()),
+        };
+
+        let data = container_static_data
+            .get_entity_data(CancellationToken::default())
+            .await
+            .unwrap();
+
+        assert_eq!(data.len(), 1);
+        assert_eq!(data.get("image/topic").unwrap(), "nginx:latest");
+    }
+
+    #[tokio::test]
+    async fn test_get_logs_button_get_command_topics() {
+        let should_get_logs = Arc::new(AtomicBool::new(false));
+        let get_logs_button = GetLogsButton {
+            command_topic: "logs/command".to_string(),
+            should_get_logs,
+        };
+
+        let topics = get_logs_button.get_command_topics();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0], "logs/command");
+    }
+
+    #[tokio::test]
+    async fn test_restart_button_get_command_topics() {
+        let restart_button = RestartButton {
+            command_topic: "restart/command".to_string(),
+            docker: MockDocker::new(),
+            container_name: "test".to_string(),
+        };
+
+        let topics = restart_button.get_command_topics();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0], "restart/command");
+    }
+
+    #[tokio::test]
+    async fn test_start_button_get_command_topics() {
+        let start_button = StartButton {
+            command_topic: "start/command".to_string(),
+            docker: MockDocker::new(),
+            container_name: "test".to_string(),
+        };
+
+        let topics = start_button.get_command_topics();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0], "start/command");
+    }
+
+    #[tokio::test]
+    async fn test_stop_button_get_command_topics() {
+        let stop_button = StopButton {
+            command_topic: "stop/command".to_string(),
+            docker: MockDocker::new(),
+            container_name: "test".to_string(),
+        };
+
+        let topics = stop_button.get_command_topics();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0], "stop/command");
+    }
+
+    #[tokio::test]
+    async fn test_remove_button_get_command_topics() {
+        let remove_button = RemoveButton {
+            command_topic: "remove/command".to_string(),
+            docker: MockDocker::new(),
+            container_name: "test".to_string(),
+        };
+
+        let topics = remove_button.get_command_topics();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0], "remove/command");
+    }
 }

@@ -131,4 +131,74 @@ mod tests {
         assert_eq!(slugify("mqtt-docker-node"), "mqtt_docker_node");
         assert_eq!(slugify("My Home Server"), "my_home_server");
     }
+
+    #[test]
+    fn test_pretty_format_std_duration_seconds() {
+        let duration = std::time::Duration::from_secs(45);
+        let result = pretty_format(duration);
+        assert_eq!(result, "45 seconds");
+    }
+
+    #[test]
+    fn test_pretty_format_std_duration_minutes() {
+        let duration = std::time::Duration::from_secs(120);
+        let result = pretty_format(duration);
+        assert_eq!(result, "2 minutes");
+    }
+
+    #[test]
+    fn test_pretty_format_std_duration_hours() {
+        let duration = std::time::Duration::from_secs(3661);
+        let result = pretty_format(duration);
+        assert_eq!(result, "1 hour, 1 minute and 1 second");
+    }
+
+    #[test]
+    fn test_pretty_format_std_duration_days() {
+        let duration = std::time::Duration::from_secs(86400 + 3600 + 60 + 1);
+        let result = pretty_format(duration);
+        assert_eq!(result, "1 day, 1 hour, 1 minute and 1 second");
+    }
+
+    #[test]
+    fn test_pretty_format_chrono_duration_seconds() {
+        let duration = chrono::Duration::seconds(30);
+        let result = pretty_format(duration);
+        assert_eq!(result, "30 seconds");
+    }
+
+    #[test]
+    fn test_pretty_format_chrono_duration_minutes() {
+        let duration = chrono::Duration::minutes(5);
+        let result = pretty_format(duration);
+        assert_eq!(result, "5 minutes");
+    }
+
+    #[test]
+    fn test_pretty_format_chrono_duration_hours() {
+        let duration = chrono::Duration::hours(2);
+        let result = pretty_format(duration);
+        assert_eq!(result, "2 hours");
+    }
+
+    #[test]
+    fn test_pretty_format_chrono_duration_days() {
+        let duration = chrono::Duration::days(3);
+        let result = pretty_format(duration);
+        assert_eq!(result, "3 days");
+    }
+
+    #[test]
+    fn test_pretty_format_chrono_duration_mixed() {
+        let duration = chrono::Duration::days(1) + chrono::Duration::hours(2) + chrono::Duration::minutes(30);
+        let result = pretty_format(duration);
+        assert_eq!(result, "1 day, 2 hours and 30 minutes");
+    }
+
+    #[test]
+    fn test_pretty_format_zero_duration() {
+        let duration = std::time::Duration::from_secs(0);
+        let result = pretty_format(duration);
+        assert_eq!(result, "0 seconds");
+    }
 }

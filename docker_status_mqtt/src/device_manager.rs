@@ -1346,4 +1346,164 @@ mod tests {
 
         manager.publish_sensor_data_for_all_devices(devices).await.unwrap();
     }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_connection_manager_new() {
+        let devices = make_empty_devices();
+        let connection_manager = ConnectionManager::new(devices);
+
+        assert!(!connection_manager.connected);
+        assert!(connection_manager.join_handle.is_none());
+        assert!(connection_manager.cancellation_token_source.is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_connection_manager_stop_with_no_task() {
+        let devices = make_empty_devices();
+        let connection_manager = ConnectionManager::new(devices);
+
+        connection_manager.stop().await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_connection_manager_transition_to_connected() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_publish()
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
+            mock_client
+                .expect_subscribe()
+                .returning(|_, _| Box::pin(async { Ok(()) }));
+            mock_client.expect_clone().returning(|| {
+                let mut cloned = AsyncClient::default();
+                cloned
+                    .expect_publish()
+                    .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
+                cloned
+            });
+        });
+
+        let devices = make_empty_devices();
+        let mut connection_manager = ConnectionManager::new(devices.clone());
+        let manager = make_device_manager();
+
+        assert!(!connection_manager.connected);
+
+        connection_manager
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), true)
+            .await
+            .unwrap();
+
+        assert!(connection_manager.connected);
+        assert!(connection_manager.join_handle.is_some());
+        assert!(connection_manager.cancellation_token_source.is_some());
+
+        connection_manager.stop().await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_connection_manager_already_connected_skips_restart() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_publish()
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
+            mock_client
+                .expect_subscribe()
+                .returning(|_, _| Box::pin(async { Ok(()) }));
+            mock_client.expect_clone().returning(|| {
+                let mut cloned = AsyncClient::default();
+                cloned
+                    .expect_publish()
+                    .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
+                cloned
+            });
+        });
+
+        let devices = make_empty_devices();
+        let mut connection_manager = ConnectionManager::new(devices.clone());
+        let manager = make_device_manager();
+
+        connection_manager
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), true)
+            .await
+            .unwrap();
+
+        let first_handle_id = connection_manager.join_handle.as_ref().map(|h| h.id()).unwrap();
+
+        connection_manager
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), true)
+            .await
+            .unwrap();
+
+        let second_handle_id = connection_manager.join_handle.as_ref().map(|h| h.id()).unwrap();
+
+        assert_eq!(first_handle_id, second_handle_id);
+
+        connection_manager.stop().await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_connection_manager_already_disconnected_skips_abort() {
+        let _c = create_mock_client(|_| {});
+
+        let devices = make_empty_devices();
+        let mut connection_manager = ConnectionManager::new(devices.clone());
+        let manager = make_device_manager();
+
+        assert!(!connection_manager.connected);
+
+        connection_manager
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), false)
+            .await
+            .unwrap();
+
+        assert!(!connection_manager.connected);
+        assert!(connection_manager.join_handle.is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_connection_manager_transition_to_disconnected() {
+        let _c = create_mock_client(|mock_client| {
+            mock_client
+                .expect_publish()
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
+            mock_client
+                .expect_subscribe()
+                .returning(|_, _| Box::pin(async { Ok(()) }));
+            mock_client.expect_clone().returning(|| {
+                let mut cloned = AsyncClient::default();
+                cloned
+                    .expect_publish()
+                    .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
+                cloned
+            });
+        });
+
+        let devices = make_empty_devices();
+        let mut connection_manager = ConnectionManager::new(devices.clone());
+        let manager = make_device_manager();
+
+        connection_manager
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), true)
+            .await
+            .unwrap();
+
+        assert!(connection_manager.connected);
+        assert!(connection_manager.join_handle.is_some());
+
+        connection_manager
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), false)
+            .await
+            .unwrap();
+
+        assert!(!connection_manager.connected);
+        assert!(connection_manager.join_handle.is_none());
+        assert!(connection_manager.cancellation_token_source.is_none());
+    }
 }
