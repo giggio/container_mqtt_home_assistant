@@ -381,7 +381,7 @@ mod tests {
 
         async fn get_events(&mut self, cancellation_token: CancellationToken) -> Option<Vec<UpdateEvent>> {
             tokio::task::yield_now().await; // simulating some async work and context switch
-            if self.call_count >= self.max_calls as usize || cancellation_token.is_cancelled().await {
+            if self.call_count >= self.max_calls as usize || cancellation_token.is_cancelled() {
                 return None;
             }
             self.call_count += 1;

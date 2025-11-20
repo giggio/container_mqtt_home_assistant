@@ -57,7 +57,7 @@ impl CancellationTokenSource {
         self.is_cancelled.store(true, Ordering::SeqCst);
         for token in tokens.iter_mut() {
             trace!("Cancelling token...");
-            token.cancel().await;
+            token.cancel();
         }
         trace!("Notifying waiters...");
         self.notify.notify_waiters();
@@ -66,7 +66,7 @@ impl CancellationTokenSource {
 
     pub async fn create_token(&mut self) -> CancellationToken {
         let token = CancellationToken {
-            is_cancelled: Arc::new(RwLock::new(false)),
+            is_cancelled: Arc::new(AtomicBool::new(false)),
             notify: self.notify.clone(),
             #[cfg(debug_assertions)]
             waiters_count: self.waiters_count.clone(),
@@ -81,14 +81,14 @@ impl CancellationTokenSource {
     }
 
     #[cfg(test)]
-    pub fn is_cancelled(&self) -> bool {
+    fn is_cancelled(&self) -> bool {
         self.is_cancelled.load(Ordering::SeqCst)
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct CancellationToken {
-    is_cancelled: Arc<RwLock<bool>>, // change to AtomicBool?
+    is_cancelled: Arc<AtomicBool>,
     notify: Arc<Notify>,
     #[cfg(debug_assertions)]
     waiters_count: Arc<AtomicUsize>,
@@ -100,7 +100,7 @@ impl Default for CancellationToken {
     /// To be cancellable it needs to be created from a CancellationTokenSource.
     fn default() -> Self {
         CancellationToken {
-            is_cancelled: Arc::new(RwLock::new(false)),
+            is_cancelled: Arc::new(AtomicBool::new(false)),
             notify: Arc::new(Notify::new()),
             #[cfg(debug_assertions)]
             waiters_count: Arc::new(AtomicUsize::new(0)),
@@ -109,14 +109,14 @@ impl Default for CancellationToken {
 }
 
 impl CancellationToken {
-    async fn cancel(&mut self) {
-        *self.is_cancelled.write().await = true;
+    fn cancel(&mut self) {
+        self.is_cancelled.store(true, Ordering::SeqCst);
     }
     pub async fn wait_on<F>(&self, future: F) -> Result<<F as std::future::IntoFuture>::Output>
     where
         F: std::future::IntoFuture,
     {
-        if *self.is_cancelled.read().await {
+        if self.is_cancelled.load(Ordering::SeqCst) {
             trace!("CancellationToken already cancelled before wait_on");
             return Err(Error::CancellationRequested);
         }
@@ -139,15 +139,14 @@ impl CancellationToken {
     }
 
     #[cfg(test)]
-    pub async fn is_cancelled(&self) -> bool {
-        *self.is_cancelled.read().await
+    pub fn is_cancelled(&self) -> bool {
+        self.is_cancelled.load(Ordering::SeqCst)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::future;
     use tokio::time::{Duration, sleep, timeout};
 
     #[tokio::test]
@@ -274,8 +273,8 @@ mod tests {
         assert!(result1.is_ok());
 
         source.cancel().await;
-        assert!(token.is_cancelled().await);
-        assert!(token_clone.is_cancelled().await);
+        assert!(token.is_cancelled());
+        assert!(token_clone.is_cancelled());
     }
 
     #[tokio::test]
@@ -300,15 +299,15 @@ mod tests {
 
         source.cancel().await;
         assert!(source.is_cancelled());
-        assert!(token.is_cancelled().await);
+        assert!(token.is_cancelled());
 
         source.cancel().await;
         assert!(source.is_cancelled());
-        assert!(token.is_cancelled().await);
+        assert!(token.is_cancelled());
 
         source.cancel().await;
         assert!(source.is_cancelled());
-        assert!(token.is_cancelled().await);
+        assert!(token.is_cancelled());
     }
 
     #[tokio::test]
@@ -347,12 +346,7 @@ mod tests {
 
         source.cancel().await;
         assert!(source.is_cancelled());
-        assert!(
-            future::join_all(tokens.iter().map(|t| t.is_cancelled()))
-                .await
-                .into_iter()
-                .all(|c| c)
-        );
+        assert!(tokens.iter().all(|t| t.is_cancelled()));
     }
 
     #[tokio::test]
