@@ -26,43 +26,6 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub struct UpdateEngine<F, Fut, TEvent>
-where
-    F: FnMut(&CancellationToken) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<Option<Vec<TEvent>>>> + Send,
-{
-    cancellation_token: CancellationToken,
-    events: F,
-}
-
-impl<F, Fut, TEvent> Debug for UpdateEngine<F, Fut, TEvent>
-where
-    F: FnMut(&CancellationToken) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<Option<Vec<TEvent>>>> + Send,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(&self.cancellation_token, f)
-    }
-}
-
-#[allow(dead_code)]
-impl<F, Fut, TEvent> UpdateEngine<F, Fut, TEvent>
-where
-    F: FnMut(&CancellationToken) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<Option<Vec<TEvent>>>> + Send,
-{
-    pub fn new(cancellation_token: CancellationToken, events: F) -> Self {
-        Self {
-            cancellation_token,
-            events,
-        }
-    }
-
-    pub async fn next_event(&mut self) -> Result<Option<Vec<TEvent>>> {
-        (self.events)(&self.cancellation_token).await
-    }
-}
-
 #[derive(Debug)]
 pub enum UpdateEvent {
     Data(HashMap<String, String>),
@@ -307,7 +270,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
-    use crate::{cancellation_token::CancellationTokenSource, devices::test_helpers::*};
+    use crate::devices::test_helpers::*;
     use pretty_assertions::assert_eq;
 
     impl PartialEq for UpdateEvent {
@@ -335,121 +298,6 @@ mod tests {
                 _ => false,
             }
         }
-    }
-
-    #[tokio::test]
-    async fn single_event() {
-        let mut engine = UpdateEngine::new(CancellationToken::default(), |_| async {
-            Ok(Some(vec![UpdateEvent::Data(
-                hashmap! {"x".to_string() => "y".to_string()},
-            )]))
-        });
-
-        let events = engine.next_event().await.unwrap().unwrap();
-        assert_eq!(
-            events,
-            vec![UpdateEvent::Data(hashmap! {"x".to_string() => "y".to_string()})]
-        );
-    }
-
-    #[tokio::test]
-    async fn no_event() {
-        let mut engine = UpdateEngine::<_, _, UpdateEvent>::new(CancellationToken::default(), |_| async { Ok(None) });
-        let first_events = engine.next_event().await.unwrap();
-        assert_eq!(first_events, None);
-        let second_events = engine.next_event().await.unwrap();
-        assert_eq!(second_events, None);
-    }
-
-    struct SomeState {
-        call_count: usize,
-        current_char: char,
-        max_calls: u8,
-    }
-
-    impl SomeState {
-        fn new(max_calls: u8) -> Self {
-            Self {
-                call_count: 0,
-                current_char: 'a',
-                max_calls,
-            }
-        }
-
-        async fn get_events(&mut self, cancellation_token: CancellationToken) -> Option<Vec<UpdateEvent>> {
-            tokio::task::yield_now().await; // simulating some async work and context switch
-            if self.call_count >= self.max_calls as usize || cancellation_token.is_cancelled() {
-                return None;
-            }
-            self.call_count += 1;
-            let first_char = self.current_char;
-            let second_char = ((first_char as u8) + 1) as char;
-            self.current_char = ((second_char as u8) + 1) as char;
-            Some(vec![UpdateEvent::Data(hashmap! {
-                first_char.to_string() => second_char.to_string()
-            })])
-        }
-    }
-
-    #[tokio::test]
-    async fn one_event_two_polls() {
-        let some_state = Arc::new(Mutex::new(SomeState::new(1)));
-        let mut engine = UpdateEngine::new(CancellationToken::default(), move |cancellation_token| {
-            let state = some_state.clone();
-            let cancellation_token_clone = cancellation_token.clone();
-            async move { Ok(state.lock().await.get_events(cancellation_token_clone).await) }
-        });
-        let first_events = engine.next_event().await.unwrap();
-        assert_eq!(
-            first_events,
-            Some(vec![UpdateEvent::Data(hashmap! {"a".to_string() => "b".to_string()})])
-        );
-        let second_events = engine.next_event().await.unwrap();
-        assert_eq!(second_events, None);
-    }
-
-    #[tokio::test]
-    async fn two_events_three_polls() {
-        let some_state = Arc::new(Mutex::new(SomeState::new(2)));
-        let mut engine = UpdateEngine::new(CancellationToken::default(), move |cancellation_token| {
-            let state = some_state.clone();
-            let cancellation_token_clone = cancellation_token.clone();
-            async move { Ok(state.lock().await.get_events(cancellation_token_clone).await) }
-        });
-        let first_events = engine.next_event().await.unwrap();
-        assert_eq!(
-            first_events,
-            Some(vec![UpdateEvent::Data(hashmap! {"a".to_string() => "b".to_string()})])
-        );
-        let second_events = engine.next_event().await.unwrap();
-        assert_eq!(
-            second_events,
-            Some(vec![UpdateEvent::Data(hashmap! {"c".to_string() => "d".to_string()})])
-        );
-        let third_events = engine.next_event().await.unwrap();
-        assert_eq!(third_events, None);
-    }
-
-    #[tokio::test]
-    async fn two_events_cancelled() {
-        let mut cancellation_token_source = CancellationTokenSource::new();
-        let some_state = Arc::new(Mutex::new(SomeState::new(2)));
-        let mut engine = UpdateEngine::new(
-            cancellation_token_source.create_token().await,
-            move |cancellation_token| {
-                let state = some_state.clone();
-                let cancellation_token_clone = cancellation_token.clone();
-                async move { Ok(state.lock().await.get_events(cancellation_token_clone).await) }
-            },
-        );
-        let first_events = engine.next_event().await.unwrap();
-        assert_eq!(
-            first_events,
-            Some(vec![UpdateEvent::Data(hashmap! {"a".to_string() => "b".to_string()})])
-        );
-        cancellation_token_source.cancel().await;
-        let second_events = engine.next_event().await.unwrap();
-        assert_eq!(second_events, None);
     }
 
     #[tokio::test]
