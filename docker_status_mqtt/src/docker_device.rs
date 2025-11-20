@@ -1090,59 +1090,6 @@ mod tests {
         assert_eq!(data.len(), 0);
     }
 
-    // #[tokio::test]
-    // async fn test_number_of_containers_get_entity_data_success() {
-    //     let mut mock_docker = MockDocker::new();
-    //
-    //     let containers = vec![
-    //         ContainerSummary::default(),
-    //         ContainerSummary::default(),
-    //         ContainerSummary::default(),
-    //         ContainerSummary::default(),
-    //         ContainerSummary::default(),
-    //     ];
-    //
-    //     mock_docker
-    //         .expect_list_containers()
-    //         .returning(move |_| Ok(containers.clone()));
-    //
-    //     let number_of_containers = NumberOfContainers {
-    //         state_topic: "docker_host/total_containers/state".to_string(),
-    //         docker: mock_docker,
-    //     };
-    //
-    //     let data = number_of_containers
-    //         .get_entity_data(CancellationToken::default())
-    //         .await
-    //         .unwrap();
-    //
-    //     assert_eq!(data.len(), 1);
-    //     let topic = "docker_host/total_containers/state";
-    //     assert!(data.contains_key(topic));
-    //     assert_eq!(data.get(topic).unwrap(), "5");
-    // }
-
-    // #[tokio::test]
-    // async fn test_number_of_containers_get_entity_data_zero_containers() {
-    //     let mut mock_docker = MockDocker::new();
-    //
-    //     mock_docker.expect_list_containers().returning(|_| Ok(vec![]));
-    //
-    //     let number_of_containers = NumberOfContainers {
-    //         state_topic: "docker_host/total_containers/state".to_string(),
-    //         docker: mock_docker,
-    //     };
-    //
-    //     let data = number_of_containers
-    //         .get_entity_data(CancellationToken::default())
-    //         .await
-    //         .unwrap();
-    //
-    //     assert_eq!(data.len(), 1);
-    //     let topic = "docker_host/total_containers/state";
-    //     assert_eq!(data.get(topic).unwrap(), "0");
-    // }
-
     #[tokio::test]
     async fn test_container_stats_get_entity_data_success_for_memory_cpu_empty() {
         let mut mock_docker = MockDocker::new();
