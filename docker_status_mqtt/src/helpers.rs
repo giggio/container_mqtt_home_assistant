@@ -52,7 +52,10 @@ impl From<std::time::Duration> for DurationConvert {
 impl From<DurationConvert> for std::time::Duration {
     fn from(duration_convert: DurationConvert) -> Self {
         match duration_convert {
-            DurationConvert::ChronoDuration(d) => d.to_std().unwrap(),
+            DurationConvert::ChronoDuration(d) => d.to_std().unwrap_or_else(|_| {
+                warn!("Failed to convert chrono duration to std duration, using zero.");
+                std::time::Duration::ZERO
+            }),
             DurationConvert::StdDuration(d) => d,
         }
     }
@@ -61,7 +64,10 @@ impl From<DurationConvert> for chrono::Duration {
     fn from(duration_convert: DurationConvert) -> Self {
         match duration_convert {
             DurationConvert::ChronoDuration(d) => d,
-            DurationConvert::StdDuration(d) => chrono::Duration::from_std(d).unwrap(),
+            DurationConvert::StdDuration(d) => chrono::Duration::from_std(d).unwrap_or_else(|_| {
+                warn!("Failed to convert std duration to chrono duration, using zero.");
+                chrono::Duration::zero()
+            }),
         }
     }
 }

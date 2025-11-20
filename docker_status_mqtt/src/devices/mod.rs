@@ -86,11 +86,19 @@ pub trait HandlesData: Send + Sync + Debug {
     where
         Self: Sized + 'static,
     {
+        let type_name = std::any::type_name::<Self>();
         DebouncedHandler {
             inner: Box::new(self),
             duration,
             last_pool: Mutex::new(UtcDateTime::MIN_UTC),
-            type_name: std::any::type_name::<Self>().rsplit("::").next().unwrap().to_string(),
+            type_name: type_name
+                .rsplit("::")
+                .next()
+                .unwrap_or_else(|| {
+                    error!("Failed to get simple type name for type {type_name} in debounced handler");
+                    "UnknownType"
+                })
+                .to_string(),
         }
     }
 }

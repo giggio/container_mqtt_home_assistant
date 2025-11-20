@@ -69,7 +69,11 @@ impl Devices {
             let Devices { mut devices, .. } = provider
                 .get_devices(availability_topic.clone(), CancellationToken::default())
                 .await?;
-            all_devices.extend(Arc::get_mut(&mut devices).unwrap().write().await.drain());
+            if let Some(devices2) = Arc::get_mut(&mut devices) {
+                all_devices.extend(devices2.write().await.drain());
+            } else {
+                error!("Failed to get mutable reference to devices from provider");
+            }
         }
         Ok(Devices {
             devices: Arc::new(RwLock::new(all_devices)),

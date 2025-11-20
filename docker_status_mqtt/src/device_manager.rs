@@ -467,7 +467,7 @@ impl DeviceManager {
                     trace!(category = "[event_loop]"; "Not connected and stop requested, exiting event loop...");
                     break;
                 }
-                let difference: chrono::TimeDelta = stop_at.unwrap() - Utc::now();
+                let difference = stop_at.unwrap_or(chrono::DateTime::<Utc>::MIN_UTC) - Utc::now();
                 if difference.num_seconds() <= 0 {
                     info!(category = "[event_loop]"; "Graceful shutdown period elapsed, forcing disconnection...");
                     break;
@@ -708,23 +708,35 @@ impl ConnectionManager {
                 trace!("Was not connected, now is connected, will start periodic sensor data publishing task below");
             }
             debug!("Aborting periodic sensor data publishing task...");
-            self.cancellation_token_source.take().unwrap().cancel().await;
-            let join_handle = self.join_handle.take().unwrap();
+            self.cancellation_token_source
+                .take()
+                .unwrap_or_else(|| {
+                    error!("Cancellation token source missing when aborting periodic sensor data publishing task, creating new one for cancellation...");
+                    CancellationTokenSource::new()
+                })
+                .cancel()
+                .await;
             let timeout_duration = DURATION_UNTIL_SHUTDOWN;
             let wait_until = Utc::now() + timeout_duration;
             trace!(
                 "Waiting for periodic sensor data publishing task to finish, will timeout in {}...",
                 pretty_format(timeout_duration)
             );
-            while !join_handle.is_finished() && Utc::now() < wait_until {
-                trace!("Waiting for periodic sensor data publishing task to finish...");
-                time::sleep(DURATION_QUICK_CYCLE).await;
-            }
-            if join_handle.is_finished() {
-                trace!("Periodic sensor data publishing task finished.");
+            if let Some(join_handle) = self.join_handle.take() {
+                while !join_handle.is_finished() && Utc::now() < wait_until {
+                    trace!("Waiting for periodic sensor data publishing task to finish...");
+                    time::sleep(DURATION_QUICK_CYCLE).await;
+                }
+                if join_handle.is_finished() {
+                    trace!("Periodic sensor data publishing task finished.");
+                } else {
+                    error!("Periodic sensor data publishing task did not finish in time, aborting...");
+                    join_handle.abort();
+                }
             } else {
-                error!("Periodic sensor data publishing task did not finish in time, aborting...");
-                join_handle.abort();
+                error!(
+                    "Join handle missing when aborting periodic sensor data publishing task, cannot wait for it to finish."
+                );
             }
         }
         self.connected = is_connected_message;

@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used), allow(clippy::panic))]
+
 #[macro_use]
 extern crate log;
 use std::sync::Arc;
