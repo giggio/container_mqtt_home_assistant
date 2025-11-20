@@ -7,7 +7,7 @@ use crate::{
         Button, ButtonDeviceClass, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, EntityDetails,
         EntityDetailsGetter, HandlesData, Light, Result, Sensor, Switch, Text,
     },
-    helpers::*,
+    helpers::slugify,
 };
 
 use async_trait::async_trait;
@@ -52,6 +52,7 @@ impl DeviceProvider for SampleDeviceProvider {
     fn id(&self) -> String {
         "sample_device_provider".to_string()
     }
+    #[allow(clippy::too_many_lines)]
     async fn get_devices(&self, availability_topic: String, cancellation_token: CancellationToken) -> Result<Devices> {
         let mut main_device = Device::new(
             DeviceDetails {
@@ -102,9 +103,7 @@ impl DeviceProvider for SampleDeviceProvider {
                 "Living Room Light".to_string(),
                 "mdi:lightbulb".to_string(),
             )
-            .await
-            .support_brightness(100)
-            .await,
+            .support_brightness(100),
         );
         let living_room_light_data = Box::new(LivingRoomLight {
             is_random: self.is_random,
@@ -311,7 +310,7 @@ impl HandlesData for LogText {
         } else {
             "This is a log text".to_string()
         };
-        Ok(hashmap! {self.state_topic.clone() => log_text.to_string()})
+        Ok(hashmap! {self.state_topic.clone() => log_text.clone()})
     }
 }
 
@@ -528,7 +527,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(devices.len().await, 2);
-        let mut devices_vec = devices.into_vec().await.unwrap();
+        let mut devices_vec = devices.into_vec().unwrap();
         devices_vec.sort_by_key(|d| d.details.identifier.clone());
         let device = devices_vec.last().unwrap();
         assert_eq!(device.details.name, "Test Device");

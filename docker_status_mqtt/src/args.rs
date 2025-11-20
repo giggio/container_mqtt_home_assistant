@@ -3,7 +3,7 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use const_format::formatc;
 
-use crate::helpers::*;
+use crate::helpers::{hostname, slugify};
 
 const ENV_PREFIX: &str = "MQTT_";
 
@@ -66,6 +66,7 @@ fn parse_duration(arg: &str) -> Result<Duration, String> {
     ))
 }
 
+#[allow(clippy::unnecessary_wraps)] // this is used by Clap, it needs to return Result
 fn parse_slug(arg: &str) -> Result<String, String> {
     Ok(slugify(arg))
 }

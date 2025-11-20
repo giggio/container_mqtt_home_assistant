@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use docker_status_mqtt_proc_macros::*;
+use docker_status_mqtt_proc_macros::EntityDetailsGetter;
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::fmt::Debug;
 
@@ -13,11 +14,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(EntityDetailsGetter, Debug)]
 pub struct Button {
     pub details: EntityDetails,
-    pub device_class: Option<String>,
+    pub device_class: Option<ButtonDeviceClass>,
     pub command_topic: String,
     pub can_be_made_unavailable: bool,
 }
 
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "lowercase")]
 pub enum ButtonDeviceClass {
     Identify,
     Restart,
@@ -39,14 +42,7 @@ impl Button {
     }
 
     pub fn with_device_class(mut self, device_class: ButtonDeviceClass) -> Self {
-        self.device_class = Some(
-            match device_class {
-                ButtonDeviceClass::Identify => "identify",
-                ButtonDeviceClass::Restart => "restart",
-                ButtonDeviceClass::Update => "update",
-            }
-            .to_string(),
-        );
+        self.device_class = Some(device_class);
         self
     }
     pub fn can_be_made_unavailable(mut self) -> Self {

@@ -1,4 +1,10 @@
-#![cfg_attr(test, allow(clippy::unwrap_used), allow(clippy::panic))]
+#![cfg_attr(
+    test,
+    allow(clippy::unwrap_used),
+    allow(clippy::panic),
+    allow(clippy::similar_names),
+    allow(clippy::too_many_lines)
+)]
 
 #[macro_use]
 extern crate log;
@@ -19,9 +25,9 @@ mod sample_device;
 mod update_engine;
 
 use crate::{
-    args::*,
+    args::{Cli, Commands},
     cancellation_token::CancellationTokenSource,
-    device_manager::*,
+    device_manager::{DeviceManager, Error},
     devices::{DeviceProvider, Devices},
     docker_device::DockerDeviceProvider,
     sample_device::SampleDeviceProvider,
@@ -74,7 +80,7 @@ async fn run(cli: Cli) -> Result<()> {
                 cancellation_token_source.create_token().await,
             )
             .await?;
-            device_manager.publish_sensor_data_periodically(rx, devices, device_providers_arc)?;
+            device_manager.publish_sensor_data_periodically(rx, devices, device_providers_arc);
             info!("Configured, initiating connection and message exchange...");
             device_manager.deal_with_event_loop(eventloop).await?;
         }
@@ -88,7 +94,7 @@ async fn run(cli: Cli) -> Result<()> {
 fn deal_with_ctrl_c(mut cancellation_token_source: CancellationTokenSource) {
     tokio::spawn(async move {
         match tokio::signal::ctrl_c().await {
-            Ok(_) => {
+            Ok(()) => {
                 trace!("Ctrl-C received, cancelling cancellation token source...");
                 cancellation_token_source.cancel().await;
             }

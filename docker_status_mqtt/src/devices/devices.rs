@@ -2,7 +2,7 @@ use crate::{
     cancellation_token::CancellationToken,
     device_manager::PublishResult,
     devices::{DeviceProvider, Result, device::Device},
-    helpers::*,
+    helpers::AsyncMap,
 };
 use hashbrown::{HashMap, HashSet};
 use std::{fmt::Debug, sync::Arc};
@@ -16,11 +16,12 @@ pub struct Devices {
 
 impl Devices {
     pub fn new_from_many_devices(devices: Vec<Device>, cancellation_token: CancellationToken) -> Self {
-        let devices = Arc::new(RwLock::new(HashMap::<_, _>::from_iter(
+        let devices = Arc::new(RwLock::new(
             devices
                 .into_iter()
-                .map(|d| (d.details.identifier.clone(), Arc::new(RwLock::new(d)))),
-        )));
+                .map(|d| (d.details.identifier.clone(), Arc::new(RwLock::new(d))))
+                .collect(),
+        ));
         Self {
             devices,
             cancellation_token,
@@ -81,7 +82,7 @@ impl Devices {
         })
     }
 
-    pub async fn iter(&self) -> Vec<Arc<RwLock<Device>>> {
+    pub async fn devices_vec(&self) -> Vec<Arc<RwLock<Device>>> {
         self.devices.read().await.values().cloned().collect()
     }
 
@@ -91,7 +92,7 @@ impl Devices {
     }
 
     #[cfg(test)]
-    pub async fn into_vec(self) -> Option<Vec<Device>> {
+    pub fn into_vec(self) -> Option<Vec<Device>> {
         let locked_devices = self.into_iter().unwrap().collect::<Vec<_>>();
         let mut devices = vec![];
         for device_lock in locked_devices {
@@ -109,7 +110,7 @@ impl Devices {
     }
 
     pub async fn create_discovery_info(&self, discovery_prefix: &str) -> Result<HashMap<String, String>> {
-        self.iter()
+        self.devices_vec()
             .await
             .async_map(
                 |device_lock| async move { device_lock.read().await.create_discovery_info(discovery_prefix).await },
@@ -121,7 +122,7 @@ impl Devices {
 
     pub async fn discovery_topics(&self, discovery_prefix: &str) -> Vec<String> {
         let mut topics = Vec::new();
-        for device_lock in self.iter().await {
+        for device_lock in self.devices_vec().await {
             let device = device_lock.read().await;
             topics.push(device.discovery_topic(discovery_prefix));
         }
@@ -130,7 +131,7 @@ impl Devices {
 
     pub async fn command_topics(&self) -> Vec<String> {
         let mut topics = Vec::new();
-        for device_lock in self.iter().await {
+        for device_lock in self.devices_vec().await {
             let device = device_lock.read().await;
             topics.extend(device.command_topics());
         }
@@ -139,7 +140,7 @@ impl Devices {
 
     pub async fn get_entities_data(&self) -> Result<HashMap<String, String>> {
         let mut entities_data = HashMap::<String, String>::new();
-        for device_lock in self.iter().await {
+        for device_lock in self.devices_vec().await {
             let device = device_lock.read().await;
             trace!("Getting entities data for device: {}", device.details.name);
             let data = device.get_entities_data().await?;
@@ -152,7 +153,7 @@ impl Devices {
     pub async fn handle_command(&self, publish_result: &PublishResult) -> Result<HashMap<String, String>> {
         let mut state_updates = HashMap::new();
         let mut handled = false;
-        for device_lock in self.iter().await {
+        for device_lock in self.devices_vec().await {
             let (command_handle_result, device_name) = {
                 let mut device = device_lock.write().await;
                 trace!("Checking if device {} can handle command...", device.details.name);
@@ -173,12 +174,11 @@ impl Devices {
                     state_updates.extend(state_update_topics);
                 }
                 break;
-            } else {
-                trace!(
-                    "Device {device_name} did not handle command on topic: {}, payload: {}",
-                    publish_result.topic, publish_result.payload,
-                );
             }
+            trace!(
+                "Device {device_name} did not handle command on topic: {}, payload: {}",
+                publish_result.topic, publish_result.payload,
+            );
             trace!(
                 "Device {device_name} finished checking command and did not handle it, will now go to next device..."
             );
@@ -283,7 +283,7 @@ mod tests {
         let device2 = make_device_with_identifier("device2");
         let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
 
-        let iterated_devices = devices.iter().await;
+        let iterated_devices = devices.devices_vec().await;
         assert_eq!(iterated_devices.len(), 2);
     }
 
@@ -303,7 +303,7 @@ mod tests {
         let device2 = make_device_with_identifier("device2");
         let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
 
-        let vec_devices = devices.into_vec().await.unwrap();
+        let vec_devices = devices.into_vec().unwrap();
         assert_eq!(vec_devices.len(), 2);
         assert!(vec_devices.iter().any(|d| d.details.identifier == "device1"));
         assert!(vec_devices.iter().any(|d| d.details.identifier == "device2"));

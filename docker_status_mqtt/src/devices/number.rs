@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use docker_status_mqtt_proc_macros::*;
+use docker_status_mqtt_proc_macros::EntityDetailsGetter;
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::fmt::Debug;
 
@@ -17,7 +18,8 @@ pub struct Number {
     pub mode: NumberMode,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum NumberMode {
     Auto,
     Box,
@@ -59,11 +61,7 @@ impl Entity for Number {
         let json = json!({
             "platform": "number",
             "command_topic": self.command_topic,
-            "mode": match self.mode {
-                NumberMode::Box => "box",
-                NumberMode::Slider => "slider",
-                NumberMode::Auto => "auto",
-            },
+            "mode": self.mode,
         });
         let mut entity_details_json = self.details.json_for_discovery(device).await?;
         if let (Value::Object(entity_details_map), Value::Object(sensor_map)) = (&mut entity_details_json, json) {

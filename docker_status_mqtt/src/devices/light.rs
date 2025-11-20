@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use docker_status_mqtt_proc_macros::*;
+use docker_status_mqtt_proc_macros::EntityDetailsGetter;
 use serde_json::{Map, Value, json};
 use std::fmt::Debug;
 
@@ -22,10 +22,10 @@ pub struct Light {
 }
 
 impl Light {
-    pub async fn new(device_identifier: String, name: String, icon: String) -> Self {
-        Self::new_with_details(EntityDetails::new(device_identifier, name, icon)).await
+    pub fn new(device_identifier: String, name: String, icon: String) -> Self {
+        Self::new_with_details(EntityDetails::new(device_identifier, name, icon))
     }
-    pub async fn new_with_details(details: EntityDetails) -> Self {
+    pub fn new_with_details(details: EntityDetails) -> Self {
         let command_topic = details.get_topic_for_command(None);
         Light {
             details: details.add_command(command_topic.clone()),
@@ -37,7 +37,7 @@ impl Light {
             brightness_command_topic: None,
         }
     }
-    pub async fn support_brightness(mut self, scale: u8) -> Self {
+    pub fn support_brightness(mut self, scale: u8) -> Self {
         self.supports_brightness = true;
         self.brightness_scale = scale;
         let brightness_command_topic = self.details.get_topic_for_command(Some("brightness"));
@@ -82,9 +82,9 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
-    #[tokio::test]
-    async fn test_light_creation_basic() {
-        let light = Light::new("dev1".to_string(), "Test light".to_string(), "mdi:x".to_string()).await;
+    #[test]
+    fn test_light_creation_basic() {
+        let light = Light::new("dev1".to_string(), "Test light".to_string(), "mdi:x".to_string());
         assert_eq!(light.payload_on, "ON");
         assert_eq!(light.payload_off, "OFF");
         assert!(!light.supports_brightness);
@@ -92,16 +92,14 @@ mod tests {
         assert_eq!(light.command_topic, "dev1/test_light/command");
     }
 
-    #[tokio::test]
-    async fn test_light_with_brightness() {
+    #[test]
+    fn test_light_with_brightness() {
         let light = Light::new(
             "dev1".to_string(),
             "Dimmable Light".to_string(),
             "mdi:lightbulb".to_string(),
         )
-        .await
-        .support_brightness(100)
-        .await;
+        .support_brightness(100);
         assert!(light.supports_brightness);
         assert_eq!(light.brightness_scale, 100);
         assert_eq!(
@@ -110,16 +108,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_light_support_brightness_chaining() {
+    #[test]
+    fn test_light_support_brightness_chaining() {
         let light = Light::new(
             "dev1".to_string(),
             "Dimmable Light".to_string(),
             "mdi:lightbulb".to_string(),
         )
-        .await
-        .support_brightness(200)
-        .await;
+        .support_brightness(200);
         assert!(light.supports_brightness);
         assert_eq!(light.brightness_scale, 200);
         assert_eq!(
@@ -147,8 +143,7 @@ mod tests {
             "test_device".to_string(),
             "Simple Light".to_string(),
             "mdi:lightbulb".to_string(),
-        )
-        .await;
+        );
         let json = light
             .json_for_discovery(&device, CancellationToken::default())
             .await
@@ -182,9 +177,7 @@ mod tests {
             "Dimmable Light".to_string(),
             "mdi:lightbulb".to_string(),
         )
-        .await
-        .support_brightness(100)
-        .await;
+        .support_brightness(100);
         let json = light
             .json_for_discovery(&device, CancellationToken::default())
             .await
@@ -210,16 +203,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_light_brightness_scale_edge_cases() {
+    #[test]
+    fn test_light_brightness_scale_edge_cases() {
         let light1 = Light::new(
             "dev1".to_string(),
             "Min Brightness".to_string(),
             "mdi:lightbulb".to_string(),
         )
-        .await
-        .support_brightness(0)
-        .await;
+        .support_brightness(0);
         assert_eq!(light1.brightness_scale, 0);
 
         let light2 = Light::new(
@@ -227,9 +218,7 @@ mod tests {
             "Max Brightness".to_string(),
             "mdi:lightbulb".to_string(),
         )
-        .await
-        .support_brightness(255)
-        .await;
+        .support_brightness(255);
         assert_eq!(light2.brightness_scale, 255);
     }
 }

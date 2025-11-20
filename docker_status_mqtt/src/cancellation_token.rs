@@ -96,8 +96,8 @@ pub struct CancellationToken {
 
 #[cfg(test)]
 impl Default for CancellationToken {
-    /// The default CancellationToken will never be cancelled.
-    /// To be cancellable it needs to be created from a CancellationTokenSource.
+    /// The default `CancellationToken` will never be cancelled.
+    /// To be cancellable it needs to be created from a `CancellationTokenSource`.
     fn default() -> Self {
         CancellationToken {
             is_cancelled: Arc::new(AtomicBool::new(false)),
@@ -125,7 +125,7 @@ impl CancellationToken {
             self.waiters_count.fetch_add(1, Ordering::SeqCst);
         }
         let result = tokio::select! {
-            _ = self.notify.notified() => {
+            () = self.notify.notified() => {
                 trace!("CancellationToken was cancelled");
                 Err(Error::CancellationRequested)
             }
@@ -279,13 +279,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_wait_on_with_async_operation() {
-        let mut source = CancellationTokenSource::new();
-        let token = source.create_token().await;
-
         async fn async_operation() -> i32 {
             sleep(Duration::from_millis(50)).await;
             42
         }
+
+        let mut source = CancellationTokenSource::new();
+        let token = source.create_token().await;
 
         let result = token.wait_on(async_operation()).await;
         assert!(result.is_ok());
@@ -346,7 +346,7 @@ mod tests {
 
         source.cancel().await;
         assert!(source.is_cancelled());
-        assert!(tokens.iter().all(|t| t.is_cancelled()));
+        assert!(tokens.iter().all(CancellationToken::is_cancelled));
     }
 
     #[tokio::test]

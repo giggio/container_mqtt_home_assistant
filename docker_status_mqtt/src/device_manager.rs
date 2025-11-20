@@ -5,7 +5,7 @@ use rumqttc::{
     Transport,
     v5::{
         ClientError,
-        ConnectionError::{self, *},
+        ConnectionError::{self, ConnectionRefused, Io, MqttState, Tls},
         Event, MqttOptions,
         mqttbytes::{
             QoS,
@@ -150,13 +150,13 @@ impl DeviceManager {
 
     async fn publish_entities_discovery(&self, devices: Devices) -> Result<()> {
         let discovery_info = devices.create_discovery_info(&self.discovery_prefix).await?;
-        for (discovery_topic, discovery_json) in discovery_info.into_iter() {
+        for (discovery_topic, discovery_json) in discovery_info {
             trace!(
                 "Publishing discovery, topic: {}, payload: {}",
                 &discovery_topic, &discovery_json,
             );
             self.publish_to_client(discovery_topic.clone(), discovery_json).await?;
-            debug!("Published device discoveries for topic: {}", discovery_topic);
+            debug!("Published device discoveries for topic: {discovery_topic}");
         }
         Ok(())
     }
@@ -167,7 +167,7 @@ impl DeviceManager {
             .await?;
         trace!("Subscribed to Home Assistant status topic");
         debug!("Subscribing to command topics...");
-        for command_topic in devices.command_topics().await.iter() {
+        for command_topic in &devices.command_topics().await {
             self.subscribe_to_client(command_topic.to_owned()).await?;
             trace!("Subscribed to command topic {command_topic}");
         }
@@ -177,9 +177,9 @@ impl DeviceManager {
 
     async fn publish_removed_entities_discovery(&self, devices: Devices) -> Result<()> {
         trace!("Removing devices and entities from Home Assistant...");
-        for discovery_topic in devices.discovery_topics(&self.discovery_prefix).await.into_iter() {
+        for discovery_topic in devices.discovery_topics(&self.discovery_prefix).await {
             trace!("Removing device for topic: {}", &discovery_topic);
-            self.publish_to_client(discovery_topic, "".to_string()).await?;
+            self.publish_to_client(discovery_topic, String::new()).await?;
         }
         info!("Removed devices and entities from Home Assistant");
         Ok(())
@@ -243,16 +243,16 @@ impl DeviceManager {
             return Ok(());
         }
         match self.publish_sensor_data(state_updates).await {
-            Ok(_) => trace!("Sensor data published after command handling"),
+            Ok(()) => trace!("Sensor data published after command handling"),
             Err(e) => {
-                error!(category = "deal_with_command"; "Error publishing sensor data after command handling: {e}")
+                error!(category = "deal_with_command"; "Error publishing sensor data after command handling: {e}");
             }
         }
         trace!("Completed dealing with command");
         Ok(())
     }
 
-    async fn disconnect(&self) -> Result<()> {
+    fn disconnect(&self) -> Result<()> {
         trace!("Disconnecting from MQTT broker if connected...");
         if self.is_connected() == Some(true) {
             info!("Disconnecting from MQTT broker...");
@@ -291,7 +291,7 @@ impl DeviceManager {
         Ok(())
     }
 
-    async fn got_disconnected(
+    fn got_disconnected(
         &self,
         message: &str,
         event: &str,
@@ -313,7 +313,7 @@ impl DeviceManager {
         Ok(())
     }
 
-    async fn deal_with_event(
+    fn deal_with_event(
         &mut self,
         event_result: std::result::Result<Event, ConnectionError>,
         should_stop: bool,
@@ -341,8 +341,7 @@ impl DeviceManager {
             }
             Ok(Event::Incoming(Packet::Disconnect(_))) => {
                 trace!("Received disconnect packet from broker, will wait...");
-                self.got_disconnected("Unexpected disconnection, will retry...", "disconnect")
-                    .await?;
+                self.got_disconnected("Unexpected disconnection, will retry...", "disconnect")?;
                 should_wait = true;
             }
             Ok(Event::Outgoing(o)) => {
@@ -357,8 +356,7 @@ impl DeviceManager {
             }
             Err(Io(x)) => {
                 trace!("Received I/O error: {x}, will wait...");
-                self.got_disconnected(&format!("MQTT I/O connection error ({x}), will retry..."), "I/O Error")
-                    .await?;
+                self.got_disconnected(&format!("MQTT I/O connection error ({x}), will retry..."), "I/O Error")?;
                 should_wait = true;
             }
             Err(Tls(e)) => {
@@ -371,8 +369,7 @@ impl DeviceManager {
                     should_break = true;
                 } else {
                     trace!("Received MQTT state error ({error}), will wait...");
-                    self.got_disconnected("MQTT state error, retrying in 5 seconds...", "I/O Error")
-                        .await?;
+                    self.got_disconnected("MQTT state error, retrying in 5 seconds...", "I/O Error")?;
                     should_wait = true;
                 }
             }
@@ -381,11 +378,10 @@ impl DeviceManager {
                 self.got_disconnected(
                     &format!("MQTT connection error: {e}, retrying in 5 seconds..."),
                     "I/O Error",
-                )
-                .await?;
+                )?;
                 should_wait = true;
             }
-        };
+        }
         Ok(EventHandled {
             should_wait,
             should_break,
@@ -414,7 +410,7 @@ impl DeviceManager {
                 .wait_on(time::sleep(other_mqtt_device.availability_after_discovery))
                 .await
             {
-                Ok(_) => {
+                Ok(()) => {
                     // this wait is necessary because if it is the first time the device is connected,
                     // registration will take a few seconds and if we make it available before that,
                     // Home Assistant will not register it and the device and entities will not become
@@ -427,7 +423,7 @@ impl DeviceManager {
                 Err(_) => {
                     info!("Received Ctrl+C, not making available after discovery.");
                 }
-            };
+            }
         });
         trace!("Initialization done...");
         Ok(())
@@ -489,28 +485,24 @@ impl DeviceManager {
                 sleep_result = self
                     .cancellation_token
                     .wait_on(time::sleep(wait_duration)) => {
-                    match sleep_result {
-                        Ok(_) => {
-                            error!(category = "[event_loop]"; "Forcing disconnection...");
-                            break;
-                        }
-                        Err(_) => {
-                            info!(category = "[event_loop]"; "Received Ctrl+C, shutting down...");
-                            should_stop = true;
-                            stop_at = Some(Utc::now() + DURATION_UNTIL_SHUTDOWN);
-                            if self.is_connected() == Some(true) {
-                                trace!(category = "[event_loop]"; "Was waiting for event loop and connected, will make unavailable and disconnect after stop request...");
-                                self.tx.send(ChannelMessages::Stopping)?;
-                            } else {
-                                trace!(category = "[event_loop]"; "Was waiting for event loop and not connected, no need to wait for event loop and will skip make unavailable and disconnecting...");
-                                break;
-                            }
-                        }
+                    if let Ok(()) = sleep_result {
+                        error!(category = "[event_loop]"; "Forcing disconnection...");
+                        break;
+                    }
+                    info!(category = "[event_loop]"; "Received Ctrl+C, shutting down...");
+                    should_stop = true;
+                    stop_at = Some(Utc::now() + DURATION_UNTIL_SHUTDOWN);
+                    if self.is_connected() == Some(true) {
+                        trace!(category = "[event_loop]"; "Was waiting for event loop and connected, will make unavailable and disconnect after stop request...");
+                        self.tx.send(ChannelMessages::Stopping)?;
+                    } else {
+                        trace!(category = "[event_loop]"; "Was waiting for event loop and not connected, no need to wait for event loop and will skip make unavailable and disconnecting...");
+                        break;
                     }
                 }
                 loop_result = eventloop.poll() => {
                     trace!(category = "[event_loop]"; "Event loop polled, result: {loop_result:?}");
-                    match self.deal_with_event(loop_result, should_stop).await {
+                    match self.deal_with_event(loop_result, should_stop) {
                         Ok(event_handled) => {
                             should_wait = event_handled.should_wait;
                             if event_handled.should_break {
@@ -540,7 +532,7 @@ impl DeviceManager {
         rx: Receiver<ChannelMessages>,
         devices: Devices,
         device_providers: Arc<Vec<Box<dyn DeviceProvider>>>,
-    ) -> Result<()> {
+    ) {
         trace!("Starting periodic sensor data publishing task...");
         let other_mqtt_device = self.clone();
         tokio::spawn(async move {
@@ -548,11 +540,10 @@ impl DeviceManager {
                 .maintain_message_traffic(rx, devices, device_providers)
                 .await
             {
-                Ok(_) => trace!("Periodic sensor data publishing task exited normally"),
+                Ok(()) => trace!("Periodic sensor data publishing task exited normally"),
                 Err(e) => error!("Error in periodic sensor data publishing task: {e}"),
             }
         });
-        Ok(())
     }
 
     /// this runs in a separate thread, handling messages from the channel
@@ -581,12 +572,12 @@ impl DeviceManager {
                     trace!(category = "[message_traffic]"; "Channel closed, exiting message sync loop");
                     return Err(Error::ChannelClosed);
                 }
-                Ok(Ok(_)) => {
+                Ok(Ok(())) => {
                     trace!(category = "[message_traffic]"; "Channel changed, processing message...");
                 }
             }
             let message = rx.borrow_and_update().clone();
-            trace!(category = "[message_traffic]"; "Got next channel message: {:?}", message);
+            trace!(category = "[message_traffic]"; "Got next channel message: {message:?}");
             match message {
                 ChannelMessages::Connected(is_connected_message) => {
                     connection_manager
@@ -595,10 +586,10 @@ impl DeviceManager {
                             device_providers.clone(),
                             is_connected_message,
                         )
-                        .await?
+                        .await?;
                 }
                 ChannelMessages::Message(publish_result) => {
-                    self.deal_with_command(publish_result.clone(), devices.clone()).await?
+                    self.deal_with_command(publish_result.clone(), devices.clone()).await?;
                 }
                 ChannelMessages::Stopping => {
                     trace!(category = "[message_traffic]"; "Received stop message, will stop state publishing...");
@@ -612,7 +603,7 @@ impl DeviceManager {
                     trace!(category = "[message_traffic]"; "Processing stop message, will make devices unavailable...");
                     self.make_unavailable().await?;
                     trace!(category = "[message_traffic]"; "Processing stop message, will disconnect...");
-                    self.disconnect().await?;
+                    self.disconnect()?;
                     trace!(category = "[message_traffic]"; "Processing stop message, exiting message sync loop...");
                     connection_manager.stop().await;
                     trace!(category = "[message_traffic]"; "Processed stop message, done.");
@@ -822,7 +813,7 @@ impl ConnectionManager {
                                         Devices::new_from_many_shared_devices(devices_vec, cancellation_token.clone())
                                             .await,
                                     )
-                                    .await?
+                                    .await?;
                             }
                             UpdateEvent::DevicesCreated(new_device_ids) => {
                                 trace!("Publishing new device entities to Home Assistant...");
@@ -830,7 +821,7 @@ impl ConnectionManager {
                                 device_manager.publish_entities_discovery(new_devices.clone()).await?;
                                 time::sleep(Duration::from_secs(1)).await;
                                 device_manager.subscribe_to_commands(new_devices).await?;
-                                device_manager.make_available().await?
+                                device_manager.make_available().await?;
                             }
                         }
                     }
@@ -1042,9 +1033,9 @@ mod tests {
             mock_client.expect_try_disconnect().returning(|| Ok(())).times(1);
         });
         let manager = make_device_manager();
-        manager.disconnect().await.unwrap();
+        manager.disconnect().unwrap();
         manager.set_connected(true);
-        manager.disconnect().await.unwrap();
+        manager.disconnect().unwrap();
     }
 
     #[tokio::test]
@@ -1305,7 +1296,7 @@ mod tests {
                     predicate::eq("homeassistant/device/test_device/config".to_string()),
                     predicate::eq(QoS::AtLeastOnce),
                     predicate::eq(false),
-                    predicate::eq("".to_string()),
+                    predicate::eq(String::new()),
                 )
                 .returning(|_, _, _, _| Box::pin(async { Ok(()) }))
                 .times(1);
@@ -1438,14 +1429,14 @@ mod tests {
             .await
             .unwrap();
 
-        let first_handle_id = connection_manager.join_handle.as_ref().map(|h| h.id()).unwrap();
+        let first_handle_id = connection_manager.join_handle.as_ref().map(JoinHandle::id).unwrap();
 
         connection_manager
             .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), true)
             .await
             .unwrap();
 
-        let second_handle_id = connection_manager.join_handle.as_ref().map(|h| h.id()).unwrap();
+        let second_handle_id = connection_manager.join_handle.as_ref().map(JoinHandle::id).unwrap();
 
         assert_eq!(first_handle_id, second_handle_id);
 

@@ -12,6 +12,7 @@ use bollard::{
 use chrono::Duration;
 use futures::TryStreamExt;
 use hashbrown::{HashMap, HashSet};
+use rust_decimal::prelude::*;
 use serde_json::json;
 use std::{
     fmt::Debug,
@@ -26,7 +27,7 @@ use crate::{
         Button, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, EntityDetails, EntityDetailsGetter,
         HandlesData, Sensor,
     },
-    helpers::*,
+    helpers::{AsyncMap, slugify},
 };
 
 const HOST_DEVICE_METADATA: &str = "host_device";
@@ -75,15 +76,16 @@ impl DockerDeviceProvider {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn create_container_devices(
         &self,
         containers: Vec<ContainerSummary>,
-        host_identifier: String,
-        availability_topic: String,
-        cancellation_token: CancellationToken,
+        host_identifier: &str,
+        availability_topic: &str,
+        cancellation_token: &CancellationToken,
     ) -> Vec<Device> {
         let mut device_vec = Vec::new();
-        for container in containers.into_iter() {
+        for container in containers {
             let container_name = if let Some(name) = container.names.as_ref().and_then(|n| n.first()) {
                 name.trim_start_matches('/').to_string()
             } else {
@@ -127,7 +129,7 @@ impl DockerDeviceProvider {
                 Some("%".to_string()),
                 None,
             ));
-            let container_stats_data = Box::new(ContainerStats {
+            let container_statistics_data = Box::new(ContainerStats {
                 used_cpu_state_topic: used_cpus.details().get_topic_for_state(None),
                 used_memory_state_topic: used_memory.details().get_topic_for_state(None),
                 docker: self.docker.clone(),
@@ -184,14 +186,14 @@ impl DockerDeviceProvider {
                     identifier: device_identifier.clone(),
                     manufacturer: "Giovanni Bassi".to_string(),
                     sw_version: env!("CARGO_PKG_VERSION").to_string(),
-                    via_device: Some(host_identifier.clone()),
+                    via_device: Some(host_identifier.to_owned()),
                 },
                 DeviceOrigin {
                     name: "docker-status-mqtt".to_string(),
                     sw: env!("CARGO_PKG_VERSION").to_string(),
                     url: "https://github.com/giggio/docker-status-mqtt".to_string(),
                 },
-                availability_topic.clone(),
+                availability_topic.to_owned(),
                 vec![
                     log_text,
                     get_logs_button,
@@ -208,7 +210,7 @@ impl DockerDeviceProvider {
                 vec![
                     log_text_data,
                     get_logs_button_data,
-                    container_stats_data,
+                    container_statistics_data,
                     container_status_data,
                     restart_button_data,
                     start_button_data,
@@ -328,12 +330,8 @@ impl DeviceProvider for DockerDeviceProvider {
             cancellation_token.clone(),
         )
         .with_metadata(vec![Box::new(HOST_DEVICE_METADATA.to_string())]);
-        let mut devices_vec = self.create_container_devices(
-            containers,
-            host_identifier,
-            availability_topic,
-            cancellation_token.clone(),
-        );
+        let mut devices_vec =
+            self.create_container_devices(containers, &host_identifier, &availability_topic, &cancellation_token);
         devices_vec.push(host_device);
         let devices = Devices::new_from_many_devices(devices_vec, cancellation_token);
         Ok(devices)
@@ -359,7 +357,7 @@ impl DeviceProvider for DockerDeviceProvider {
             })
             .collect::<Vec<String>>();
         let devices_ids_to_remove = devices
-            .iter()
+            .devices_vec()
             .await
             .async_map(|device_lock| async move {
                 let device = device_lock.read().await;
@@ -390,14 +388,10 @@ impl DeviceProvider for DockerDeviceProvider {
         let new_containers = containers
             .into_iter()
             .filter(|c| {
-                c.names
-                    .as_ref()
-                    .and_then(|names| names.first())
-                    .map(|name| {
-                        let device_identifier = slugify(name.trim_start_matches('/'));
-                        !current_devices_id.contains(&device_identifier)
-                    })
-                    .unwrap_or(false)
+                c.names.as_ref().and_then(|names| names.first()).is_some_and(|name| {
+                    let device_identifier = slugify(name.trim_start_matches('/'));
+                    !current_devices_id.contains(&device_identifier)
+                })
             })
             .collect::<Vec<ContainerSummary>>();
         if new_containers.is_empty() {
@@ -406,9 +400,9 @@ impl DeviceProvider for DockerDeviceProvider {
         let host_identifier = slugify(&self.provider_name);
         let devices_to_add = self.create_container_devices(
             new_containers,
-            host_identifier,
-            availability_topic,
-            cancellation_token.clone(),
+            &host_identifier,
+            &availability_topic,
+            &cancellation_token,
         );
         let ids = devices_to_add
             .iter()
@@ -547,6 +541,7 @@ struct DiskFree {
 }
 #[async_trait]
 impl HandlesData for DiskFree {
+    #[allow(clippy::too_many_lines)]
     async fn get_entity_data(
         &self,
         cancellation_token: CancellationToken,
@@ -683,9 +678,7 @@ impl HandlesData for ContainerStatus {
             ))
             .await??;
 
-        let state = if let Some(s) = inspect.state {
-            s
-        } else {
+        let Some(state) = inspect.state else {
             warn!(
                 "Container {} has no state information, skipping status update.",
                 self.container_name
@@ -749,12 +742,13 @@ impl ContainerStats {
                     && let Some(last_total_usage) = last_cpu_usage.total_usage
                     && let Some(last_system_cpu_usage) = last_cpu_stats.system_cpu_usage
                 {
-                    let cpu_delta = total_usage.saturating_sub(last_total_usage) as f64;
-                    let system_cpu_delta = system_cpu_usage.saturating_sub(last_system_cpu_usage) as f64;
-                    if system_cpu_delta == 0.0 || cpu_delta == 0.0 {
+                    let cpu_delta = total_usage.saturating_sub(last_total_usage);
+                    let system_cpu_delta = system_cpu_usage.saturating_sub(last_system_cpu_usage);
+                    if system_cpu_delta == 0 || cpu_delta == 0 {
                         return Ok(Some("0".to_string()));
                     }
-                    let total_usage = (100.0 * cpu_delta / system_cpu_delta) * online_cpus as f64;
+                    let total_usage = (Decimal::from(100) * Decimal::from(cpu_delta) / Decimal::from(system_cpu_delta))
+                        * Decimal::from(online_cpus);
                     Ok(Some(format!("{total_usage:.2}")))
                 } else {
                     Err(Error::NoStats)
@@ -766,7 +760,7 @@ impl ContainerStats {
             Err(Error::NoStats)
         }
     }
-    fn get_memory(&self, stat: &ContainerStatsResponse) -> Result<String> {
+    fn get_memory(stat: &ContainerStatsResponse) -> Result<String> {
         if let Some(used_memory) = &stat.memory_stats
             && let Some(usage) = used_memory.usage
         {
@@ -792,8 +786,8 @@ impl HandlesData for ContainerStats {
         if !inspect.state.and_then(|s| s.running).unwrap_or(false) {
             *self.last_cpu_stats.write().await = None;
             return Ok(hashmap! {
-                self.used_memory_state_topic.clone() => "".to_string(),
-                self.used_cpu_state_topic.clone() => "".to_string()
+                self.used_memory_state_topic.clone() => String::new(),
+                self.used_cpu_state_topic.clone() => String::new()
             });
         }
         let stats = cancellation_token
@@ -807,11 +801,11 @@ impl HandlesData for ContainerStats {
             )
             .await??;
         if let Some(stat) = stats.into_iter().next() {
-            let used_memory = self.get_memory(&stat)?;
+            let used_memory = Self::get_memory(&stat)?;
             let used_cpu = self.get_cpu(&stat).await?;
             Ok(hashmap! {
                 self.used_memory_state_topic.clone() => used_memory,
-                self.used_cpu_state_topic.clone() => used_cpu.unwrap_or("".to_string())
+                self.used_cpu_state_topic.clone() => used_cpu.unwrap_or(String::new())
             })
         } else {
             Err(Error::NoStats.into())
@@ -1156,15 +1150,15 @@ mod tests {
         mock_docker.expect_stats().returning(|_, _| {
             let stats = ContainerStatsResponse {
                 memory_stats: Some(ContainerMemoryStats {
-                    usage: Some(1073741824),
+                    usage: Some(1_073_741_824),
                     ..ContainerMemoryStats::default()
                 }),
                 cpu_stats: Some(ContainerCpuStats {
                     cpu_usage: Some(ContainerCpuUsage {
-                        total_usage: Some(4000000000),
+                        total_usage: Some(4_000_000_000),
                         ..ContainerCpuUsage::default()
                     }),
-                    system_cpu_usage: Some(30000000000),
+                    system_cpu_usage: Some(30_000_000_000),
                     online_cpus: Some(2),
                     ..ContainerCpuStats::default()
                 }),
@@ -1199,7 +1193,7 @@ mod tests {
         assert_eq!(data.len(), 2);
         let memory_topic = "test_container/used_memory/state";
         assert!(data.contains_key(memory_topic));
-        assert_eq!(data.get(memory_topic).unwrap(), &(1073741824 / 1024).to_string());
+        assert_eq!(data.get(memory_topic).unwrap(), &(1_073_741_824 / 1024).to_string());
         let cpu_topic = "test_container/used_cpu/state";
         assert!(data.contains_key(cpu_topic));
         assert_eq!(data.get(cpu_topic).unwrap(), "");
@@ -1212,15 +1206,15 @@ mod tests {
         mock_docker.expect_stats().returning(|_, _| {
             let stats = ContainerStatsResponse {
                 memory_stats: Some(ContainerMemoryStats {
-                    usage: Some(1073741824),
+                    usage: Some(1_073_741_824),
                     ..ContainerMemoryStats::default()
                 }),
                 cpu_stats: Some(ContainerCpuStats {
                     cpu_usage: Some(ContainerCpuUsage {
-                        total_usage: Some(4000000000),
+                        total_usage: Some(4_000_000_000),
                         ..ContainerCpuUsage::default()
                     }),
-                    system_cpu_usage: Some(30000000000),
+                    system_cpu_usage: Some(30_000_000_000),
                     online_cpus: Some(2),
                     ..ContainerCpuStats::default()
                 }),
@@ -1246,10 +1240,10 @@ mod tests {
             container_name: "test_container".to_string(),
             last_cpu_stats: Arc::new(RwLock::new(Some(ContainerCpuStats {
                 cpu_usage: Some(ContainerCpuUsage {
-                    total_usage: Some(1000000000),
+                    total_usage: Some(1_000_000_000),
                     ..ContainerCpuUsage::default()
                 }),
-                system_cpu_usage: Some(10000000000),
+                system_cpu_usage: Some(10_000_000_000),
                 online_cpus: Some(2),
                 ..ContainerCpuStats::default()
             }))),
@@ -1263,7 +1257,7 @@ mod tests {
         assert_eq!(data.len(), 2);
         assert_eq!(
             data.get("test_container/used_memory/state").unwrap(),
-            &(1073741824 / 1024).to_string()
+            &(1_073_741_824 / 1024).to_string()
         );
         assert_eq!(data.get("test_container/used_cpu/state").unwrap(), "30.00");
     }
@@ -1390,10 +1384,10 @@ mod tests {
                 }),
                 cpu_stats: Some(ContainerCpuStats {
                     cpu_usage: Some(ContainerCpuUsage {
-                        total_usage: Some(4000000000),
+                        total_usage: Some(4_000_000_000),
                         ..ContainerCpuUsage::default()
                     }),
-                    system_cpu_usage: Some(30000000000),
+                    system_cpu_usage: Some(30_000_000_000),
                     online_cpus: Some(2),
                     ..ContainerCpuStats::default()
                 }),
@@ -1557,12 +1551,12 @@ mod tests {
                 ]),
                 containers: Some(vec![
                     ContainerSummary {
-                        size_rw: Some(65536 * 1024), // 64MB
+                        size_rw: Some(65_536 * 1024), // 64MB
                         state: Some(ContainerSummaryStateEnum::RUNNING),
                         ..Default::default()
                     },
                     ContainerSummary {
-                        size_rw: Some(131072 * 1024), // 128MB
+                        size_rw: Some(131_072 * 1024), // 128MB
                         state: Some(ContainerSummaryStateEnum::EXITED),
                         ..Default::default()
                     },
@@ -1608,8 +1602,8 @@ mod tests {
         let containers_attrs: serde_json::Value =
             serde_json::from_str(data.get("containers/attributes").unwrap()).unwrap();
         assert_eq!(containers_attrs["containers_active"], 1);
-        assert_eq!(containers_attrs["containers_size_kib"], (196608 * 1024 / 1024));
-        assert_eq!(containers_attrs["containers_reclaimable_kib"], (131072 * 1024 / 1024));
+        assert_eq!(containers_attrs["containers_size_kib"], (196_608 * 1024 / 1024));
+        assert_eq!(containers_attrs["containers_reclaimable_kib"], (131_072 * 1024 / 1024));
     }
 
     #[tokio::test]

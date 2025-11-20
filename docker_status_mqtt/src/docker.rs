@@ -16,7 +16,7 @@ pub async fn _list_images() -> Result<(), Box<dyn std::error::Error>> {
     let builder = ListImagesOptionsBuilder::new().all(true);
     let images = docker.list_images(Some(builder.build())).await?;
     for image in images {
-        println!("-> {:?}", image);
+        println!("-> {image:?}");
     }
     Ok(())
 }

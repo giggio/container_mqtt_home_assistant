@@ -20,6 +20,7 @@ pub struct Device {
     pub data_handlers: Vec<Box<dyn HandlesData>>,
     pub availability_topic: String,
     pub metadata: Vec<Box<dyn Metadata>>,
+    #[allow(clippy::struct_field_names)]
     pub device_manager_id: String,
     cancellation_token: CancellationToken,
 }
@@ -100,7 +101,7 @@ impl Device {
     pub fn get_metadata<T: Clone + 'static>(&self) -> Vec<T> {
         self.metadata
             .iter()
-            .map(|meta| meta.as_ref())
+            .map(AsRef::as_ref)
             .filter_map(|meta| meta.as_any().downcast_ref::<T>())
             .cloned()
             .collect::<Vec<_>>()
@@ -127,7 +128,7 @@ impl Device {
 
     pub async fn get_entities_data(&self) -> Result<HashMap<String, String>> {
         let mut entities_data = HashMap::<String, String>::with_capacity(self.data_handlers.len());
-        for data_handler in self.data_handlers.iter() {
+        for data_handler in &self.data_handlers {
             let provider_data = data_handler.get_entity_data(self.cancellation_token.clone()).await?;
             entities_data.extend(provider_data);
         }
@@ -167,7 +168,7 @@ impl Device {
     }
 
     pub async fn handle_command(&mut self, topic: &str, payload: &str) -> Result<CommandResult> {
-        for data_handler in self.data_handlers.iter_mut() {
+        for data_handler in &mut self.data_handlers {
             trace!(
                 "Checking device handling command '{topic}' for device '{}'",
                 self.details.name,
@@ -178,9 +179,8 @@ impl Device {
             if command_handle_result.handled {
                 debug!("Device '{}' handled command '{topic}'", self.details.name);
                 return Ok(command_handle_result);
-            } else {
-                trace!("Did not handle command '{topic}' for device '{}'", self.details.name);
             }
+            trace!("Did not handle command '{topic}' for device '{}'", self.details.name);
         }
         Ok(CommandResult {
             handled: false,

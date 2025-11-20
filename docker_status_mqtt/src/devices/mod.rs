@@ -7,9 +7,10 @@ pub use crate::devices::{
     switch::Switch,
     text::Text,
 };
-use crate::{cancellation_token::CancellationToken, device_manager::CommandResult, helpers::*};
+use crate::{cancellation_token::CancellationToken, device_manager::CommandResult, helpers::slugify};
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use futures::future;
 use hashbrown::{HashMap, HashSet};
 use serde_json::{Value, json};
 use std::{fmt::Debug, sync::Arc};
@@ -70,15 +71,15 @@ pub trait HandlesData: Send + Sync + Debug {
         payload: &str,
         cancellation_token: CancellationToken,
     ) -> Result<CommandResult> {
-        if !self.get_command_topics().contains(&topic) {
+        if self.get_command_topics().contains(&topic) {
+            trace!("Received event for topic {topic} and CAN handle it");
+            self.do_handle_command(topic, payload, cancellation_token).await
+        } else {
             trace!("Received event for topic {topic} and CANNOT handle it");
             Ok(CommandResult {
                 handled: false,
                 state_update_topics: None,
             })
-        } else {
-            trace!("Received event for topic {topic} and CAN handle it");
-            self.do_handle_command(topic, payload, cancellation_token).await
         }
     }
 
@@ -243,7 +244,7 @@ impl EntityDetails {
         basic_path
     }
 
-    pub async fn json_for_discovery(&self, device: &Device) -> Result<Value> {
+    pub fn json_for_discovery(&self, device: &Device) -> impl Future<Output = Result<Value>> {
         let json = json!({
             "name": self.name,
             "unique_id": format!("{}_{}", device.details.identifier, self.id),
@@ -263,7 +264,7 @@ impl EntityDetails {
                 Value::String("{{ value_json | tojson }}".to_string()),
             );
         }
-        Ok(Value::Object(json_map))
+        future::ready(Ok(Value::Object(json_map)))
     }
 }
 

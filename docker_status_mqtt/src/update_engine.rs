@@ -208,7 +208,7 @@ async fn get_events_from_devices(
     cancellation_token: CancellationToken,
     last_messages: Arc<Mutex<HashMap<String, String>>>,
 ) -> Result<HashMap<String, String>> {
-    Ok(devices.iter().await.into_iter().async_map(async |device_arc| {
+    Ok(devices.devices_vec().await.into_iter().async_map(async |device_arc| {
             info!(category = "timed_update_event_provider"; "Publishing sensor data...");
             let device = cancellation_token.wait_on(device_arc.read()).await?;
             trace!(category = "timed_update_event_provider"; "Getting entities data for device: {}", device.details.name);
@@ -240,35 +240,32 @@ async fn filter_data(
     cancellation_token: CancellationToken,
 ) -> Result<HashMap<String, String>> {
     let mut entities_data = HashMap::<String, String>::new();
-    for entity_data in data.into_iter() {
+    for entity_data in data {
         let mut last_messages = cancellation_token.wait_on(last_messages_mutex.lock()).await?;
-        match last_messages.get_mut(&entity_data.0) {
-            Some(last_payload) => {
-                if *last_payload == entity_data.1 {
-                    trace!(
-                        category = "timed_update_event_provider";
-                        "Entity data for topic {} payload is identical, skipping publish",
-                        entity_data.0
-                    );
-                } else {
-                    trace!(
-                        category = "timed_update_event_provider";
-                        "Entity data for topic {} payload has changed, will publish",
-                        entity_data.0
-                    );
-                    entities_data.insert(entity_data.0.clone(), entity_data.1.clone());
-                    *last_payload = entity_data.1;
-                }
-            }
-            _ => {
+        if let Some(last_payload) = last_messages.get_mut(&entity_data.0) {
+            if *last_payload == entity_data.1 {
                 trace!(
                     category = "timed_update_event_provider";
-                    "Entity data for topic {} has changed or is new, will publish",
+                    "Entity data for topic {} payload is identical, skipping publish",
+                    entity_data.0
+                );
+            } else {
+                trace!(
+                    category = "timed_update_event_provider";
+                    "Entity data for topic {} payload has changed, will publish",
                     entity_data.0
                 );
                 entities_data.insert(entity_data.0.clone(), entity_data.1.clone());
-                last_messages.insert(entity_data.0, entity_data.1);
+                *last_payload = entity_data.1;
             }
+        } else {
+            trace!(
+                category = "timed_update_event_provider";
+                "Entity data for topic {} has changed or is new, will publish",
+                entity_data.0
+            );
+            entities_data.insert(entity_data.0.clone(), entity_data.1.clone());
+            last_messages.insert(entity_data.0, entity_data.1);
         }
     }
     Ok(entities_data)
@@ -571,7 +568,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_devices_created_and_removed_event_producer_purges_last_messages() {
         let devices = make_empty_devices();
-        let device = devices.iter().await.into_iter().next().unwrap();
+        let device = devices.devices_vec().await.into_iter().next().unwrap();
         let entity = make_mock_entity_with_device_id_and_name("removed_device", "Test Device");
         {
             device.write().await.entities.push(Box::new(entity));

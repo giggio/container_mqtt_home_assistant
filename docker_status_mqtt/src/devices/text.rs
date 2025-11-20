@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use docker_status_mqtt_proc_macros::*;
+use docker_status_mqtt_proc_macros::EntityDetailsGetter;
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::fmt::Debug;
 
@@ -17,9 +18,10 @@ pub struct Text {
     pub mode: TextMode,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum TextMode {
-    Plain,
+    Text,
     Password,
 }
 
@@ -31,7 +33,7 @@ impl Text {
         let command_topic = details.get_topic_for_command(None);
         Text {
             details: details.add_command(command_topic.clone()),
-            mode: TextMode::Plain,
+            mode: TextMode::Text,
             command_topic,
         }
     }
@@ -52,10 +54,7 @@ impl Entity for Text {
         let json = json!({
             "platform": "text",
             "command_topic": self.command_topic,
-            "mode": match self.mode {
-                TextMode::Plain => "text",
-                TextMode::Password => "password",
-            },
+            "mode": self.mode,
         });
         let mut entity_details_json = self.details.json_for_discovery(device).await?;
         if let (Value::Object(entity_details_map), Value::Object(sensor_map)) = (&mut entity_details_json, json) {
@@ -79,7 +78,7 @@ mod tests {
     #[tokio::test]
     async fn test_text_plain() {
         let text = Text::new("dev1".to_string(), "Some text".to_string(), "mdi:x".to_string());
-        assert_eq!(text.mode, TextMode::Plain);
+        assert_eq!(text.mode, TextMode::Text);
     }
 
     #[tokio::test]
