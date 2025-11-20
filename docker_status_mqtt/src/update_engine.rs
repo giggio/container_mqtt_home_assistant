@@ -14,7 +14,6 @@ use crate::{
     helpers::AsyncMap,
 };
 
-#[allow(dead_code)]
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Unknown error")]
@@ -32,7 +31,6 @@ where
     F: FnMut(&CancellationToken) -> Fut + Send + Sync,
     Fut: Future<Output = Result<Option<Vec<TEvent>>>> + Send,
 {
-    #[allow(dead_code)]
     cancellation_token: CancellationToken,
     events: F,
 }
@@ -68,8 +66,6 @@ where
 #[derive(Debug)]
 pub enum UpdateEvent {
     Data(HashMap<String, String>),
-    #[allow(dead_code)]
-    DevicesUpdated(HashSet<String>), // todo: we are not using this yet, should we remove it?
     DevicesRemoved(Vec<Arc<RwLock<Device>>>),
     DevicesCreated(HashSet<String>),
 }
@@ -321,7 +317,6 @@ mod tests {
         fn eq(&self, other: &Self) -> bool {
             match (self, other) {
                 (UpdateEvent::Data(a), UpdateEvent::Data(b)) => a == b,
-                (UpdateEvent::DevicesUpdated(a), UpdateEvent::DevicesUpdated(b)) => a == b,
                 (UpdateEvent::DevicesRemoved(a), UpdateEvent::DevicesRemoved(b)) => {
                     let a_ids: HashSet<String> = a
                         .iter()

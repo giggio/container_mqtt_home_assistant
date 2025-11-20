@@ -46,7 +46,6 @@ pub enum Error {
     Docker(#[from] bollard::errors::Error),
     #[error("No stats available for the container")]
     NoStats,
-    #[allow(dead_code)]
     #[error("Unknown error")]
     Unknown,
 }

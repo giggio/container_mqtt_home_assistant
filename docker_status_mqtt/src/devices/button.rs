@@ -20,9 +20,7 @@ pub struct Button {
 
 pub enum ButtonDeviceClass {
     Identify,
-    #[allow(dead_code)]
     Restart,
-    #[allow(dead_code)]
     Update,
 }
 

@@ -11,7 +11,6 @@ use tokio::sync::RwLock;
 #[derive(Clone, Debug)]
 pub struct Devices {
     devices: Arc<RwLock<HashMap<String, Arc<RwLock<Device>>>>>,
-    #[allow(dead_code)] // todo: use cancellation_token somewhere or remove it?
     cancellation_token: CancellationToken,
 }
 
@@ -82,11 +81,12 @@ impl Devices {
         self.devices.read().await.values().cloned().collect()
     }
 
+    #[cfg(test)]
     pub fn into_iter(self) -> Option<hashbrown::hash_map::IntoValues<String, Arc<RwLock<Device>>>> {
         Arc::<_>::into_inner(self.devices).map(|rwlock| rwlock.into_inner().into_values())
     }
 
-    #[allow(dead_code)] // used in tests and possibly useful elsewhere
+    #[cfg(test)]
     pub async fn into_vec(self) -> Option<Vec<Device>> {
         let locked_devices = self.into_iter().unwrap().collect::<Vec<_>>();
         let mut devices = vec![];
@@ -193,7 +193,7 @@ impl Devices {
         self.devices.read().await.len()
     }
 
-    #[allow(dead_code)] // todo: keep? possibly useful
+    #[cfg(test)]
     pub async fn get(&self, identifier: &str) -> Option<Arc<RwLock<Device>>> {
         self.devices.read().await.get(identifier).cloned()
     }

@@ -17,7 +17,6 @@ pub struct Number {
     pub mode: NumberMode,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub enum NumberMode {
     Auto,
@@ -30,7 +29,6 @@ impl Number {
     pub fn new(device_identifier: String, name: String, icon: String) -> Self {
         Self::new_with_details(EntityDetails::new(device_identifier, name, icon))
     }
-    #[allow(dead_code)]
     pub fn new_with_details(details: EntityDetails) -> Self {
         let command_topic = details.get_topic_for_command(None);
         Number {

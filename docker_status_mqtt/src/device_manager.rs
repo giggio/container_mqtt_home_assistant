@@ -789,12 +789,6 @@ impl ConnectionManager {
                                     trace!("Published all sensor data to Home Assistant");
                                 }
                             }
-                            UpdateEvent::DevicesUpdated(ids) => {
-                                trace!("Publishing updated device entities to Home Assistant...");
-                                device_manager
-                                    .publish_entities_discovery(devices.filter(ids).await)
-                                    .await?
-                            }
                             UpdateEvent::DevicesRemoved(devices_vec) => {
                                 if devices_vec.is_empty() {
                                     warn!("No devices to remove, skipping...");

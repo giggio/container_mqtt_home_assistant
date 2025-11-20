@@ -17,7 +17,6 @@ pub struct Text {
     pub mode: TextMode,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub enum TextMode {
     Plain,
