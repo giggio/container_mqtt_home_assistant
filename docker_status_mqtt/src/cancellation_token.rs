@@ -1,3 +1,5 @@
+#[cfg(debug_assertions)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -17,6 +19,8 @@ pub struct CancellationTokenSource {
     tokens: Arc<RwLock<Vec<CancellationToken>>>,
     is_cancelled: Arc<AtomicBool>,
     notify: Arc<Notify>,
+    #[cfg(debug_assertions)]
+    waiters_count: Arc<AtomicUsize>,
 }
 
 impl CancellationTokenSource {
@@ -25,12 +29,27 @@ impl CancellationTokenSource {
             tokens: Arc::new(RwLock::new(Vec::new())),
             is_cancelled: Arc::new(AtomicBool::new(false)),
             notify: Arc::new(Notify::new()),
+            #[cfg(debug_assertions)]
+            waiters_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     pub async fn cancel(&mut self) {
         let mut tokens = self.tokens.write().await;
-        trace!("Cancelling CancellationTokenSource. Current tokens: {}", tokens.len());
+        trace!(
+            "Cancelling CancellationTokenSource. Current tokens: {}, current waiters: {}",
+            tokens.len(),
+            {
+                #[cfg(debug_assertions)]
+                {
+                    self.waiters_count.load(Ordering::SeqCst)
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    "unknown"
+                }
+            }
+        );
         if self.is_cancelled.load(Ordering::SeqCst) {
             trace!("CancellationTokenSource was already cancelled, returning...");
             return;
@@ -49,6 +68,8 @@ impl CancellationTokenSource {
         let token = CancellationToken {
             is_cancelled: Arc::new(RwLock::new(false)),
             notify: self.notify.clone(),
+            #[cfg(debug_assertions)]
+            waiters_count: self.waiters_count.clone(),
         };
         self.tokens.write().await.push(token.clone());
         token
@@ -69,13 +90,20 @@ impl CancellationTokenSource {
 pub struct CancellationToken {
     is_cancelled: Arc<RwLock<bool>>, // change to AtomicBool?
     notify: Arc<Notify>,
+    #[cfg(debug_assertions)]
+    waiters_count: Arc<AtomicUsize>,
 }
 
+#[cfg(test)]
 impl Default for CancellationToken {
+    /// The default CancellationToken will never be cancelled.
+    /// To be cancellable it needs to be created from a CancellationTokenSource.
     fn default() -> Self {
         CancellationToken {
             is_cancelled: Arc::new(RwLock::new(false)),
             notify: Arc::new(Notify::new()),
+            #[cfg(debug_assertions)]
+            waiters_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -88,13 +116,26 @@ impl CancellationToken {
     where
         F: std::future::IntoFuture,
     {
-        tokio::select! {
+        if *self.is_cancelled.read().await {
+            trace!("CancellationToken already cancelled before wait_on");
+            return Err(Error::CancellationRequested);
+        }
+        #[cfg(debug_assertions)]
+        {
+            self.waiters_count.fetch_add(1, Ordering::SeqCst);
+        }
+        let result = tokio::select! {
             _ = self.notify.notified() => {
                 trace!("CancellationToken was cancelled");
                 Err(Error::CancellationRequested)
             }
             x = future.into_future() => Ok(x),
+        };
+        #[cfg(debug_assertions)]
+        {
+            self.waiters_count.fetch_sub(1, Ordering::SeqCst);
         }
+        result
     }
 
     #[cfg(test)]

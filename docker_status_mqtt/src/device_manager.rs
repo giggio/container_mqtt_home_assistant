@@ -429,7 +429,7 @@ impl DeviceManager {
                 }
             };
         });
-        trace!("Initializatin done...");
+        trace!("Initialization done...");
         Ok(())
     }
 
@@ -1493,10 +1493,13 @@ mod tests {
 
         let devices = make_empty_devices();
         let mut connection_manager = ConnectionManager::new(devices.clone());
-        let manager = make_device_manager();
+        let mut device_manager = make_device_manager();
+        device_manager.publish_interval = Duration::from_millis(1000);
+        let mut cancellation_token_source = CancellationTokenSource::new();
+        device_manager.cancellation_token = cancellation_token_source.create_token().await;
 
         connection_manager
-            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), true)
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&device_manager, Arc::new(vec![]), true)
             .await
             .unwrap();
 
@@ -1504,7 +1507,7 @@ mod tests {
         assert!(connection_manager.join_handle.is_some());
 
         connection_manager
-            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), false)
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&device_manager, Arc::new(vec![]), false)
             .await
             .unwrap();
 

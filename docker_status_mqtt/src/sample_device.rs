@@ -68,7 +68,7 @@ impl DeviceProvider for SampleDeviceProvider {
             },
             availability_topic.clone(),
             self.id(),
-            CancellationToken::default(),
+            cancellation_token.clone(),
         );
         let memory_sensor = Box::new(Sensor::new_with_details(
             EntityDetails::new(
@@ -174,7 +174,7 @@ impl DeviceProvider for SampleDeviceProvider {
             },
             availability_topic,
             self.id(),
-            CancellationToken::default(),
+            cancellation_token.clone(),
         );
 
         let log_text = Box::new(Text::new(

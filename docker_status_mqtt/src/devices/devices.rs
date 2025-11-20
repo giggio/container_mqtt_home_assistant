@@ -67,7 +67,7 @@ impl Devices {
         let mut all_devices = HashMap::new();
         for provider in providers.iter() {
             let Devices { mut devices, .. } = provider
-                .get_devices(availability_topic.clone(), CancellationToken::default())
+                .get_devices(availability_topic.clone(), cancellation_token.clone())
                 .await?;
             if let Some(devices2) = Arc::get_mut(&mut devices) {
                 all_devices.extend(devices2.write().await.drain());
