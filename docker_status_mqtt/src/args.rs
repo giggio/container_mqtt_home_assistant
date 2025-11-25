@@ -30,8 +30,9 @@ pub enum Commands {
         #[arg(short = 'n', long, env = formatc!("{ENV_PREFIX}DEVICE_NAME"), default_value_t=device_name_fn(), help = "Name of the device to use in Home Assistant. If not provided, will use 'Containers at <hostname>'")]
         device_name: String,
 
-        #[arg(short = 's', long, env = formatc!("{ENV_PREFIX}SAMPLE_DEVICE_NAME"), help = "Name of the sample device to use in Home Assistant (enables sample device when provided)")]
-        sample_device_name: Option<String>,
+        #[cfg(debug_assertions)]
+        #[arg(long, env = formatc!("{ENV_PREFIX}SAMPLE_DEVICE"), help = "Enable sample device (only in debug builds)")]
+        sample_device: bool,
 
         #[arg(short = 'I', long, env = formatc!("{ENV_PREFIX}PUBLISH_INTERVAL"), value_parser = parse_duration, default_value = "5000", help = "Publish interval (in milliseconds)")]
         publish_interval: Duration,
@@ -143,17 +144,23 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn test_cli_with_sample_device_name() {
         let args = Vec::from(BASIC_ARGS)
             .into_iter()
-            .chain(vec!["--sample-device-name", "My Custom Device"])
+            .chain(vec!["--device-name", "My Custom Device", "--sample--device"])
             .collect::<Vec<_>>();
         let cli = Cli::parse_from(args);
 
         match cli.command {
-            Commands::Run { sample_device_name, .. } => {
-                assert_eq!(sample_device_name, Some("My Custom Device".to_string()));
+            Commands::Run {
+                device_name,
+                sample_device,
+                ..
+            } => {
+                assert_eq!(device_name, "My Custom Device".to_string());
+                assert!(sample_device);
             }
         }
     }
@@ -220,17 +227,7 @@ mod tests {
         assert!(cli.quiet);
     }
 
-    #[test]
-    fn test_cli_sample_device_name_default() {
-        let args = Vec::from(BASIC_ARGS);
-        let cli = Cli::parse_from(args);
-        match cli.command {
-            Commands::Run { sample_device_name, .. } => {
-                assert_eq!(sample_device_name, None);
-            }
-        }
-    }
-
+    #[cfg(debug_assertions)]
     #[test]
     fn test_cli_all_options_together() {
         let args = Vec::from(BASIC_ARGS)
@@ -260,9 +257,9 @@ mod tests {
                         disable_tls: false,
                     },
                     device_name: "Containers at MY_HOSTNAME".to_string(),
-                    sample_device_name: Some("Production Server".to_string()),
                     publish_interval: Duration::from_millis(15000),
                     device_manager_id: "prod_device_01".to_string(),
+                    sample_device: false,
                 },
             }
         );
