@@ -5,7 +5,7 @@ use crate::{
     device_manager::CommandResult,
     devices::{
         Button, ButtonDeviceClass, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, EntityDetails,
-        EntityDetailsGetter, HandlesData, Light, Result, Sensor, Switch, Text,
+        EntityDetailsGetter, HandlesData, Light, Number, Result, Sensor, Switch, Text,
     },
     helpers::slugify,
 };
@@ -131,6 +131,17 @@ impl DeviceProvider for SampleDeviceProvider {
             state_topic: server_mode_switch.details().get_topic_for_state(None),
             command_topic: server_mode_switch.details().get_topic_for_command(None),
         });
+        let some_number = Box::new(Number::new(
+            main_device.details.identifier.clone(),
+            "Some number".to_owned(),
+            "mdi:numeric".to_owned(),
+        ));
+        let some_number_data = Box::new(SomeNumber {
+            is_random: self.is_random,
+            state_topic: some_number.details().get_topic_for_state(None),
+            command_topic: some_number.details().get_topic_for_command(None),
+            value: None,
+        });
         let some_button = Box::new(
             Button::new(
                 main_device.details.identifier.clone(),
@@ -149,6 +160,7 @@ impl DeviceProvider for SampleDeviceProvider {
             server_mode_switch,
             uptime_sensor,
             some_button,
+            some_number,
         ];
         main_device.data_handlers = vec![
             living_room_light_data,
@@ -157,6 +169,7 @@ impl DeviceProvider for SampleDeviceProvider {
             server_mode_switch_data,
             uptime_sensor_data,
             some_button_data,
+            some_number_data,
         ];
         let mut dependent_device = Device::new(
             DeviceDetails {
@@ -208,6 +221,41 @@ impl DeviceProvider for SampleDeviceProvider {
         _cancellation_token: CancellationToken,
     ) -> Result<HashSet<String>> {
         Ok(HashSet::new())
+    }
+}
+
+#[derive(Debug)]
+struct SomeNumber {
+    is_random: bool,
+    value: Option<u32>,
+    state_topic: String,
+    command_topic: String,
+}
+#[async_trait]
+impl HandlesData for SomeNumber {
+    fn get_command_topics(&self) -> Vec<&str> {
+        vec![&self.command_topic]
+    }
+    async fn do_handle_command(
+        &mut self,
+        topic: &str,
+        payload: &str,
+        _cancellation_token: CancellationToken,
+    ) -> Result<CommandResult> {
+        error!("MemorySensor received event for topic {topic} and payload {payload}");
+        self.value = payload.parse().ok();
+        return Ok(CommandResult {
+            handled: true,
+            state_update_topics: Some(hashmap! {self.state_topic.clone() => self.value.unwrap_or(100).to_string()}),
+        });
+    }
+    async fn get_entity_data(&self, _cancellation_token: CancellationToken) -> Result<HashMap<String, String>> {
+        let number = if self.is_random {
+            rand::random::<u32>() % 100
+        } else {
+            self.value.unwrap_or(100)
+        };
+        Ok(hashmap! { self.state_topic.clone() => number.to_string() })
     }
 }
 

@@ -24,8 +24,8 @@ use crate::{
     cancellation_token::CancellationToken,
     device_manager::CommandResult,
     devices::{
-        Button, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, EntityDetails, EntityDetailsGetter,
-        HandlesData, Sensor,
+        Button, ButtonDeviceClass, Device, DeviceDetails, DeviceOrigin, DeviceProvider, Devices, EntityDetails,
+        EntityDetailsGetter, HandlesData, Sensor,
     },
     helpers::{AsyncMap, slugify},
 };
@@ -136,8 +136,11 @@ impl DockerDeviceProvider {
                 container_name: container_name.clone(),
                 last_cpu_stats: Arc::new(RwLock::new(None)),
             });
-            let restart_button =
-                Box::new(Button::new(&device_identifier, "Restart", "mdi:restart").can_be_made_unavailable());
+            let restart_button = Box::new(
+                Button::new(&device_identifier, "Restart", "mdi:restart")
+                    .can_be_made_unavailable()
+                    .with_device_class(ButtonDeviceClass::Restart),
+            );
             let restart_button_data = Box::new(RestartButton {
                 command_topic: restart_button.details().get_topic_for_command(None),
                 docker: self.docker.clone(),

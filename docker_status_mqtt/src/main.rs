@@ -21,16 +21,18 @@ mod devices;
 mod docker;
 mod helpers;
 mod logger;
+#[cfg(debug_assertions)]
 mod sample_device;
 mod update_engine;
 
+#[cfg(debug_assertions)]
+use crate::sample_device::SampleDeviceProvider;
 use crate::{
     args::{Cli, Commands},
     cancellation_token::CancellationTokenSource,
     device_manager::{DeviceManager, Error},
     devices::{DeviceProvider, Devices},
     docker_device::DockerDeviceProvider,
-    sample_device::SampleDeviceProvider,
 };
 mod docker_device;
 
@@ -48,14 +50,21 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Run {
             mqtt_broker_info,
             device_name,
-            sample_device_name,
             publish_interval,
             device_manager_id,
+            #[cfg(debug_assertions)]
+            sample_device,
         } => {
+            #[cfg(not(debug_assertions))]
+            #[allow(non_upper_case_globals)]
+            const sample_device: bool = false;
             let mut device_providers: Vec<Box<dyn DeviceProvider>> = vec![];
-            if let Some(name) = sample_device_name {
-                trace!("Adding sample device provider with name: {name}");
-                device_providers.push(Box::new(SampleDeviceProvider::new(name)));
+            if sample_device {
+                #[cfg(debug_assertions)]
+                {
+                    trace!("Adding sample device provider with name: {device_name}");
+                    device_providers.push(Box::new(SampleDeviceProvider::new(device_name)));
+                }
             } else {
                 trace!("Adding Docker device provider with name: {device_name}");
                 device_providers.push(Box::new(DockerDeviceProvider::new(device_name)?));

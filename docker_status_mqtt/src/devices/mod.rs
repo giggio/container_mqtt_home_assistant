@@ -1,11 +1,11 @@
+#[cfg(debug_assertions)]
+pub use crate::devices::{light::Light, number::Number, switch::Switch, text::Text};
+
 pub use crate::devices::{
     button::{Button, ButtonDeviceClass},
     device::*,
     devices::Devices,
-    light::Light,
     sensor::Sensor,
-    switch::Switch,
-    text::Text,
 };
 use crate::{cancellation_token::CancellationToken, device_manager::CommandResult, helpers::slugify};
 use async_trait::async_trait;
@@ -20,10 +20,14 @@ mod button;
 mod device;
 #[allow(clippy::module_inception)]
 mod devices;
+#[cfg(debug_assertions)]
 mod light;
+#[cfg(debug_assertions)]
 mod number;
 mod sensor;
+#[cfg(debug_assertions)]
 mod switch;
+#[cfg(debug_assertions)]
 mod text;
 
 pub mod test_helpers;
