@@ -200,10 +200,7 @@ impl DeviceProvider for SampleDeviceProvider {
         });
         dependent_device.entities = vec![log_text];
         dependent_device.data_handlers = vec![log_text_data];
-        Ok(Devices::new_from_many_devices(
-            vec![main_device, dependent_device],
-            cancellation_token,
-        ))
+        Ok(Devices::new_from_many_devices(vec![main_device, dependent_device]))
     }
 
     async fn remove_missing_devices(
@@ -676,6 +673,15 @@ mod tests {
                   "state_topic": "test_device/some_button/state",
                   "unique_id": "test_device_some_button",
                 },
+                "some_number": {
+                  "command_topic": "test_device/some_number/command",
+                  "icon": "mdi:numeric",
+                  "mode": "auto",
+                  "name": "Some number",
+                  "platform": "number",
+                  "state_topic": "test_device/some_number/state",
+                  "unique_id": "test_device_some_number",
+                },
            },
         });
         assert_eq!(
@@ -746,6 +752,7 @@ mod tests {
                 "test_device/living_room_light/state".to_string() => "OFF".to_string(),
                 "test_device/log_text/state".to_string() => "This is a log text".to_string(),
                 "dependent_device/some_text/state".to_string() => "This is a log text".to_string(),
+                "test_device/some_number/state".to_string() => "100".to_string(),
             }
         );
     }

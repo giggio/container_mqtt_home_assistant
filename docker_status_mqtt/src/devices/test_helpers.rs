@@ -117,7 +117,7 @@ pub fn make_empty_device() -> Device {
 }
 
 pub fn make_empty_devices() -> Devices {
-    Devices::new_from_single_device(make_empty_device(), CancellationToken::default())
+    Devices::new_from_single_device(make_empty_device())
 }
 
 mockall::mock! {

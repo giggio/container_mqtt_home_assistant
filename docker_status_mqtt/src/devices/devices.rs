@@ -11,27 +11,20 @@ use tokio::sync::RwLock;
 #[derive(Clone, Debug)]
 pub struct Devices {
     devices: Arc<RwLock<HashMap<String, Arc<RwLock<Device>>>>>,
-    cancellation_token: CancellationToken,
 }
 
 impl Devices {
-    pub fn new_from_many_devices(devices: Vec<Device>, cancellation_token: CancellationToken) -> Self {
+    pub fn new_from_many_devices(devices: Vec<Device>) -> Self {
         let devices = Arc::new(RwLock::new(
             devices
                 .into_iter()
                 .map(|d| (d.details.identifier.clone(), Arc::new(RwLock::new(d))))
                 .collect(),
         ));
-        Self {
-            devices,
-            cancellation_token,
-        }
+        Self { devices }
     }
 
-    pub async fn new_from_many_shared_devices(
-        devices: Vec<Arc<RwLock<Device>>>,
-        cancellation_token: CancellationToken,
-    ) -> Self {
+    pub async fn new_from_many_shared_devices(devices: Vec<Arc<RwLock<Device>>>) -> Self {
         let devices = Arc::new(RwLock::new(HashMap::<_, _>::from_iter(
             devices
                 .into_iter()
@@ -44,19 +37,15 @@ impl Devices {
                 })
                 .await,
         )));
-        Self {
-            devices,
-            cancellation_token,
-        }
+        Self { devices }
     }
 
     #[cfg(test)]
-    pub fn new_from_single_device(device: Device, cancellation_token: CancellationToken) -> Self {
+    pub fn new_from_single_device(device: Device) -> Self {
         Self {
             devices: Arc::new(RwLock::new(
                 hashmap! {device.details.identifier.clone() => Arc::new(RwLock::new(device))},
             )),
-            cancellation_token,
         }
     }
 
@@ -78,7 +67,6 @@ impl Devices {
         }
         Ok(Devices {
             devices: Arc::new(RwLock::new(all_devices)),
-            cancellation_token,
         })
     }
 
@@ -213,7 +201,6 @@ impl Devices {
             .collect::<HashMap<_, _>>();
         Devices {
             devices: Arc::new(RwLock::new(filtered_devices)),
-            cancellation_token: self.cancellation_token.clone(),
         }
     }
 
@@ -221,8 +208,8 @@ impl Devices {
         self.devices.read().await.keys().cloned().collect()
     }
 
-    pub async fn add_devices(&self, new_devices: Vec<Device>) -> Result<()> {
-        self.cancellation_token.wait_on(self.devices.write()).await?.extend(
+    pub async fn add_devices(&self, new_devices: Vec<Device>, cancellation_token: CancellationToken) -> Result<()> {
+        cancellation_token.wait_on(self.devices.write()).await?.extend(
             new_devices
                 .into_iter()
                 .map(|d| (d.details.identifier.clone(), Arc::new(RwLock::new(d)))),
@@ -230,8 +217,12 @@ impl Devices {
         Ok(())
     }
 
-    pub async fn remove_devices(&self, identifiers: &HashSet<String>) -> Result<Vec<Arc<RwLock<Device>>>> {
-        let mut devices = self.cancellation_token.wait_on(self.devices.write()).await?;
+    pub async fn remove_devices(
+        &self,
+        identifiers: &HashSet<String>,
+        cancellation_token: CancellationToken,
+    ) -> Result<Vec<Arc<RwLock<Device>>>> {
+        let mut devices = cancellation_token.wait_on(self.devices.write()).await?;
         Ok(identifiers
             .iter()
             .filter_map(|identifier| devices.remove(identifier))
@@ -250,7 +241,7 @@ mod tests {
     async fn test_new_from_many_devices() {
         let device1 = make_device_with_identifier("device1");
         let device2 = make_device_with_identifier("device2");
-        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+        let devices = Devices::new_from_many_devices(vec![device1, device2]);
 
         assert_eq!(devices.len().await, 2);
         assert!(devices.get("device1").await.is_some());
@@ -261,7 +252,7 @@ mod tests {
     async fn test_new_from_many_shared_devices() {
         let device1 = Arc::new(RwLock::new(make_device_with_identifier("device1")));
         let device2 = Arc::new(RwLock::new(make_device_with_identifier("device2")));
-        let devices = Devices::new_from_many_shared_devices(vec![device1, device2], CancellationToken::default()).await;
+        let devices = Devices::new_from_many_shared_devices(vec![device1, device2]).await;
 
         assert_eq!(devices.len().await, 2);
         assert!(devices.get("device1").await.is_some());
@@ -271,7 +262,7 @@ mod tests {
     #[tokio::test]
     async fn test_new_from_single_device() {
         let device = make_device_with_identifier("device1");
-        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+        let devices = Devices::new_from_single_device(device);
 
         assert_eq!(devices.len().await, 1);
         assert!(devices.get("device1").await.is_some());
@@ -281,7 +272,7 @@ mod tests {
     async fn test_iter() {
         let device1 = make_device_with_identifier("device1");
         let device2 = make_device_with_identifier("device2");
-        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+        let devices = Devices::new_from_many_devices(vec![device1, device2]);
 
         let iterated_devices = devices.devices_vec().await;
         assert_eq!(iterated_devices.len(), 2);
@@ -291,7 +282,7 @@ mod tests {
     async fn test_into_iter() {
         let device1 = make_device_with_identifier("device1");
         let device2 = make_device_with_identifier("device2");
-        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+        let devices = Devices::new_from_many_devices(vec![device1, device2]);
 
         let iterated_devices: Vec<_> = devices.into_iter().unwrap().collect();
         assert_eq!(iterated_devices.len(), 2);
@@ -301,7 +292,7 @@ mod tests {
     async fn test_into_vec() {
         let device1 = make_device_with_identifier("device1");
         let device2 = make_device_with_identifier("device2");
-        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+        let devices = Devices::new_from_many_devices(vec![device1, device2]);
 
         let vec_devices = devices.into_vec().unwrap();
         assert_eq!(vec_devices.len(), 2);
@@ -313,7 +304,7 @@ mod tests {
     async fn test_identifiers() {
         let device1 = make_device_with_identifier("device1");
         let device2 = make_device_with_identifier("device2");
-        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+        let devices = Devices::new_from_many_devices(vec![device1, device2]);
 
         let identifiers = devices.identifiers().await;
         assert_eq!(identifiers.len(), 2);
@@ -325,7 +316,7 @@ mod tests {
     async fn test_create_discovery_info() {
         let mut device = make_device_with_identifier("device1");
         device.entities.push(Box::new(make_mock_entity()));
-        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+        let devices = Devices::new_from_single_device(device);
 
         let discovery_info = devices.create_discovery_info("homeassistant").await.unwrap();
         assert_eq!(discovery_info.len(), 1);
@@ -340,7 +331,7 @@ mod tests {
     #[tokio::test]
     async fn test_discovery_topics() {
         let device = make_device_with_identifier("device1");
-        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+        let devices = Devices::new_from_single_device(device);
 
         let topics = devices.discovery_topics("homeassistant").await;
         assert_eq!(topics.len(), 1);
@@ -351,7 +342,7 @@ mod tests {
     async fn test_command_topics() {
         let mut device = make_device_with_identifier("device1");
         device.entities.push(Box::new(make_mock_entity()));
-        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+        let devices = Devices::new_from_single_device(device);
 
         let topics = devices.command_topics().await;
         assert!(!topics.is_empty());
@@ -361,7 +352,7 @@ mod tests {
     async fn test_get_entities_data() {
         let mut device = make_device_with_identifier("device1");
         device.data_handlers.push(Box::new(make_mock_data_handler()));
-        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+        let devices = Devices::new_from_single_device(device);
 
         let data = devices.get_entities_data().await.unwrap();
         assert_eq!(1, data.len());
@@ -381,7 +372,7 @@ mod tests {
             })))
         });
         device.data_handlers.push(Box::new(data_handler));
-        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+        let devices = Devices::new_from_single_device(device);
 
         let result = devices
             .handle_command(&PublishResult {
@@ -399,7 +390,7 @@ mod tests {
     async fn test_filter() {
         let device1 = make_device_with_identifier("device1");
         let device2 = make_device_with_identifier("device2");
-        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+        let devices = Devices::new_from_many_devices(vec![device1, device2]);
 
         let filtered = devices.filter(HashSet::from(["device1".to_string()])).await;
         assert_eq!(filtered.len().await, 1);
@@ -410,10 +401,13 @@ mod tests {
     #[tokio::test]
     async fn test_add_devices() {
         let device1 = make_device_with_identifier("device1");
-        let devices = Devices::new_from_single_device(device1, CancellationToken::default());
+        let devices = Devices::new_from_single_device(device1);
 
         let device2 = make_device_with_identifier("device2");
-        devices.add_devices(vec![device2]).await.unwrap();
+        devices
+            .add_devices(vec![device2], CancellationToken::default())
+            .await
+            .unwrap();
 
         assert_eq!(devices.len().await, 2);
         assert!(devices.get("device1").await.is_some());
@@ -424,10 +418,13 @@ mod tests {
     async fn test_remove_devices() {
         let device1 = make_device_with_identifier("device1");
         let device2 = make_device_with_identifier("device2");
-        let devices = Devices::new_from_many_devices(vec![device1, device2], CancellationToken::default());
+        let devices = Devices::new_from_many_devices(vec![device1, device2]);
 
         let removed = devices
-            .remove_devices(&vec!["device1".to_string()].into_iter().collect())
+            .remove_devices(
+                &vec!["device1".to_string()].into_iter().collect(),
+                CancellationToken::default(),
+            )
             .await
             .unwrap();
 

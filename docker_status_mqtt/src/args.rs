@@ -149,7 +149,7 @@ mod tests {
     fn test_cli_with_sample_device_name() {
         let args = Vec::from(BASIC_ARGS)
             .into_iter()
-            .chain(vec!["--device-name", "My Custom Device", "--sample--device"])
+            .chain(vec!["--device-name", "My Custom Device", "--sample-device"])
             .collect::<Vec<_>>();
         let cli = Cli::parse_from(args);
 
@@ -233,7 +233,7 @@ mod tests {
         let args = Vec::from(BASIC_ARGS)
             .into_iter()
             .chain(vec![
-                "--sample-device-name",
+                "--device-name",
                 "Production Server",
                 "--publish-interval",
                 "15000",
@@ -256,7 +256,7 @@ mod tests {
                         port: 1883,
                         disable_tls: false,
                     },
-                    device_name: "Containers at MY_HOSTNAME".to_string(),
+                    device_name: "Production Server".to_string(),
                     publish_interval: Duration::from_millis(15000),
                     device_manager_id: "prod_device_01".to_string(),
                     sample_device: false,

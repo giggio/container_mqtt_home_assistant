@@ -34,6 +34,7 @@ foldhash = "0.2.0"
 rustix = { version = "1.1.2", features = ["system"] }
 async-stream = "0.3.6"
 rust_decimal = "1.39.0"
+bitflags = "2.10.0"
 
 [dev-dependencies]
 ctor = "0.6.0"

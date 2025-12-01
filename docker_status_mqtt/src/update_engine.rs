@@ -305,7 +305,7 @@ mod tests {
     async fn test_publish_sensor_data_for_all_devices_skips_unchanged_data() {
         let mut device = make_empty_device();
         device.data_handlers.push(Box::new(make_mock_data_handler()));
-        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+        let devices = Devices::new_from_single_device(device);
         let event_producer = TimedUpdateEventProvider::create_entity_update_event_producer(
             &devices,
             CancellationToken::default(),

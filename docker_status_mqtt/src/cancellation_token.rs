@@ -34,6 +34,30 @@ impl CancellationTokenSource {
         }
     }
 
+    pub fn new_with_a_token() -> (Self, CancellationToken) {
+        let mut tokens = Vec::new();
+        #[cfg(debug_assertions)]
+        let waiters_count = Arc::new(AtomicUsize::new(0));
+        let notify = Arc::new(Notify::new());
+        let token = CancellationToken {
+            is_cancelled: Arc::new(AtomicBool::new(false)),
+            notify: notify.clone(),
+            #[cfg(debug_assertions)]
+            waiters_count: waiters_count.clone(),
+        };
+        tokens.push(token.clone());
+        (
+            Self {
+                tokens: Arc::new(RwLock::new(Vec::new())),
+                is_cancelled: Arc::new(AtomicBool::new(false)),
+                notify,
+                #[cfg(debug_assertions)]
+                waiters_count,
+            },
+            token,
+        )
+    }
+
     pub async fn cancel(&mut self) {
         let mut tokens = self.tokens.write().await;
         trace!(

@@ -15,7 +15,10 @@ use rumqttc::{
 };
 use rustls_platform_verifier::ConfigVerifierExt;
 use std::{
-    sync::{Arc, atomic},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
@@ -28,15 +31,14 @@ use tokio_rustls::rustls::ClientConfig;
 use crate::{
     cancellation_token::{CancellationToken, CancellationTokenSource},
     devices::{DeviceProvider, Devices},
-    helpers::{AsyncMap, pretty_format},
+    helpers::*,
     update_engine::{UpdateEvent, create_event_producers},
 };
 
 const DURATION_KEEPALIVE: Duration = Duration::from_secs(45);
 const DURATION_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const DURATION_AVAILABILITY_AFTER_DISCOVERY: Duration = Duration::from_secs(5);
-const DURATION_UNTIL_SHUTDOWN: Duration = Duration::from_secs(5);
-const DURATION_ZERO: Duration = Duration::from_secs(0);
+pub const DURATION_UNTIL_SHUTDOWN: Duration = Duration::from_secs(5);
 const DURATION_MAX: Duration = Duration::from_secs(u64::MAX);
 const DURATION_QUICK_CYCLE: Duration = Duration::from_millis(100);
 const DISCOVERY_PREFIX: &str = "homeassistant";
@@ -53,8 +55,8 @@ use mqtt_client::{AsyncClient, EventLoop};
 pub type Result<T> = std::result::Result<T, Error>;
 
 struct EventHandled {
-    should_wait: bool,
-    should_break: bool,
+    should_event_loop_pooling_wait: bool,
+    should_stop_event_loop: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -64,17 +66,43 @@ pub enum ChannelMessages {
     Message(PublishResult),
 }
 
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct StoppedTasks: u8 {
+        const EventLoop = 0b0001;
+        const MessageTraffic = 0b0010;
+    }
+}
+
+pub struct AtomicStoppedTasks(AtomicU8);
+impl AtomicStoppedTasks {
+    pub fn new() -> Self {
+        Self(AtomicU8::new(0))
+    }
+    fn store(&self, value: StoppedTasks) {
+        self.0.store(value.bits(), Ordering::SeqCst);
+    }
+    fn load(&self) -> StoppedTasks {
+        StoppedTasks::from_bits_truncate(self.0.load(Ordering::SeqCst))
+    }
+}
+
 #[derive(Clone)]
 pub struct DeviceManager {
     client: AsyncClient,
     discovery_prefix: String,
-    connected: Arc<atomic::AtomicU8>,
+    connected: Arc<AtomicU8>,
     tx: Sender<ChannelMessages>,
     default_timeout: Duration,
     publish_interval: Duration,
     availability_topic: String,
     availability_after_discovery: Duration,
-    cancellation_token: CancellationToken,
+    must_stop_cancellation_token_source: CancellationTokenSource,
+    must_stop_cancellation_token: CancellationToken,
+    event_loop_cancellation_token_source: CancellationTokenSource,
+    event_loop_cancellation_token: CancellationToken,
+    should_stop: Arc<AtomicBool>,
+    stopped_tasks: Arc<AtomicStoppedTasks>,
 }
 
 impl DeviceManager {
@@ -87,7 +115,6 @@ impl DeviceManager {
         password: String,
         disable_tls: bool,
         publish_interval: Duration,
-        cancellation_token: CancellationToken,
     ) -> Result<(Self, EventLoop, Receiver<ChannelMessages>)> {
         info!(
             "Connecting to MQTT broker at {broker_host}:{broker_port} with device manager id: {device_manager_id} and user: {username}"
@@ -114,17 +141,26 @@ impl DeviceManager {
         }
         let (client, eventloop) = AsyncClient::new(mqtt_options, 10);
         let (tx, rx) = tokio::sync::watch::channel(ChannelMessages::Connected(false));
+        let (must_stop_cancellation_token_source, must_stop_cancellation_token) =
+            CancellationTokenSource::new_with_a_token();
+        let (event_loop_cancellation_token_source, event_loop_cancellation_token) =
+            CancellationTokenSource::new_with_a_token();
         Ok((
             Self {
                 client,
                 discovery_prefix: DISCOVERY_PREFIX.to_string(),
-                connected: Arc::new(atomic::AtomicU8::new(0)), // None
+                connected: Arc::new(AtomicU8::new(0)), // None
                 tx,
                 default_timeout: DURATION_DEFAULT_TIMEOUT,
                 publish_interval,
                 availability_topic,
                 availability_after_discovery: DURATION_AVAILABILITY_AFTER_DISCOVERY,
-                cancellation_token,
+                must_stop_cancellation_token_source,
+                must_stop_cancellation_token,
+                event_loop_cancellation_token_source,
+                event_loop_cancellation_token,
+                should_stop: Arc::new(AtomicBool::new(false)),
+                stopped_tasks: Arc::new(AtomicStoppedTasks::new()),
             },
             eventloop,
             rx,
@@ -132,7 +168,7 @@ impl DeviceManager {
     }
 
     fn is_connected(&self) -> Option<bool> {
-        match self.connected.load(atomic::Ordering::SeqCst) {
+        match self.connected.load(Ordering::SeqCst) {
             0 => None,
             1 => Some(false),
             _ => Some(true),
@@ -141,11 +177,44 @@ impl DeviceManager {
 
     fn set_connected(&self, is_connected: bool) {
         let int_value = if is_connected { 2 } else { 1 };
-        self.connected.store(int_value, atomic::Ordering::SeqCst);
+        self.connected.store(int_value, Ordering::SeqCst);
     }
 
     pub fn availability_topic(&self) -> String {
         self.availability_topic.clone()
+    }
+
+    pub async fn stop(&mut self) -> Result<()> {
+        info!("Stopping device manager...");
+        trace!("Setting stop flag...");
+        self.should_stop.store(true, Ordering::SeqCst);
+        trace!("Sending stopping message...");
+        self.tx.send(ChannelMessages::Stopping)?;
+        // after sending the stopping message, disconnect will be called and a ConnectionAborted message will be sent to
+        // the event loop, which runs in the foreground thread. This means that the next lines will probably not run to
+        // completion.
+        trace!("Waiting for message traffic and other tasks to stop...");
+        loop {
+            let stopped_tasks = self.stopped_tasks.load();
+            if stopped_tasks == StoppedTasks::EventLoop || stopped_tasks == StoppedTasks::MessageTraffic {
+                break;
+            }
+            trace!("Waiting for message traffic and other tasks to stop. Last: {stopped_tasks:?}");
+            time::sleep(DURATION_QUICK_CYCLE).await;
+        }
+        if self.stopped_tasks.load() == StoppedTasks::EventLoop {
+            trace!("Event loop already stopped, skipping cancelling event loop cancellation token source");
+        } else {
+            trace!("Cancelling event loop cancellation token source...");
+            self.event_loop_cancellation_token_source.cancel().await;
+        }
+        Ok(())
+    }
+
+    pub async fn force_stop(&mut self) -> Result<()> {
+        info!("Stopping device manager...");
+        self.must_stop_cancellation_token_source.cancel().await;
+        Ok(())
     }
 
     async fn publish_entities_discovery(&self, devices: Devices) -> Result<()> {
@@ -316,11 +385,10 @@ impl DeviceManager {
     fn deal_with_event(
         &mut self,
         event_result: std::result::Result<Event, ConnectionError>,
-        should_stop: bool,
     ) -> std::result::Result<EventHandled, EventHandlingError> {
-        trace!("Dealing with event: {event_result:?}, should_stop: {should_stop}");
-        let mut should_wait = false;
-        let mut should_break = false;
+        trace!("Dealing with event: {event_result:?}");
+        let mut should_event_loop_pooling_wait = false;
+        let mut should_stop_event_loop = false;
         match event_result {
             Ok(Event::Incoming(Packet::Publish(publish))) => {
                 trace!("Received publish packet: {publish:?}");
@@ -342,7 +410,7 @@ impl DeviceManager {
             Ok(Event::Incoming(Packet::Disconnect(_))) => {
                 trace!("Received disconnect packet from broker, will wait...");
                 self.got_disconnected("Unexpected disconnection, will retry...", "disconnect")?;
-                should_wait = true;
+                should_event_loop_pooling_wait = true;
             }
             Ok(Event::Outgoing(o)) => {
                 trace!("Outgoing event: {o:?}");
@@ -357,20 +425,20 @@ impl DeviceManager {
             Err(Io(x)) => {
                 trace!("Received I/O error: {x}, will wait...");
                 self.got_disconnected(&format!("MQTT I/O connection error ({x}), will retry..."), "I/O Error")?;
-                should_wait = true;
+                should_event_loop_pooling_wait = true;
             }
             Err(Tls(e)) => {
                 error!("MQTT TLS error ({e})");
                 return Err(EventHandlingError::Connection("TLS Error".to_string()));
             }
             Err(MqttState(error)) => {
-                if should_stop {
+                if self.should_stop.load(Ordering::SeqCst) {
                     debug!("Got MQTT state error after stop request ({error}), exiting loop...");
-                    should_break = true;
+                    should_stop_event_loop = true;
                 } else {
                     trace!("Received MQTT state error ({error}), will wait...");
                     self.got_disconnected("MQTT state error, retrying in 5 seconds...", "I/O Error")?;
-                    should_wait = true;
+                    should_event_loop_pooling_wait = true;
                 }
             }
             Err(e) => {
@@ -379,12 +447,12 @@ impl DeviceManager {
                     &format!("MQTT connection error: {e}, retrying in 5 seconds..."),
                     "I/O Error",
                 )?;
-                should_wait = true;
+                should_event_loop_pooling_wait = true;
             }
         }
         Ok(EventHandled {
-            should_wait,
-            should_break,
+            should_event_loop_pooling_wait,
+            should_stop_event_loop,
         })
     }
 
@@ -406,7 +474,7 @@ impl DeviceManager {
         tokio::spawn(async move {
             trace!("Waiting before making available on initialization after discovery...");
             match other_mqtt_device
-                .cancellation_token
+                .must_stop_cancellation_token
                 .wait_on(time::sleep(other_mqtt_device.availability_after_discovery))
                 .await
             {
@@ -432,80 +500,35 @@ impl DeviceManager {
     /// This runs synchronously the event loop, handling incoming messages and events,
     /// on the main thread.
     pub async fn deal_with_event_loop(&mut self, mut eventloop: EventLoop) -> Result<()> {
-        let mut should_stop = false;
-        let mut stop_at = None;
-        let mut should_wait = false;
+        let mut should_event_loop_pooling_wait = false;
         loop {
-            if should_wait {
+            if should_event_loop_pooling_wait {
                 trace!(category = "[event_loop]"; "Sleeping in the beginning of event loop...");
-                should_wait = false;
-
+                should_event_loop_pooling_wait = false;
                 if self
-                    .cancellation_token
+                    .event_loop_cancellation_token
                     .wait_on(time::sleep(self.publish_interval))
                     .await
                     .is_err()
                 {
                     info!(category = "[event_loop]"; "Received Ctrl+C, shutting down...");
-                    should_stop = true;
-                    stop_at = Some(Utc::now() + DURATION_UNTIL_SHUTDOWN);
-                    if self.is_connected() == Some(true) {
-                        trace!(category = "[event_loop]"; "Was sleeping on the event loop and connected, will make unavailable and disconnect after stop request...");
-                        self.tx.send(ChannelMessages::Stopping)?;
-                    } else {
-                        trace!(category = "[event_loop]"; "Was sleeping on the event loop and not connected, no need to wait for event loop and will skip make unavailable and disconnecting...");
-                        break;
-                    }
-                }
-            }
-            let wait_duration = if should_stop {
-                if self.is_connected() != Some(true) {
-                    trace!(category = "[event_loop]"; "Not connected and stop requested, exiting event loop...");
                     break;
                 }
-                let difference = stop_at.unwrap_or(chrono::DateTime::<Utc>::MIN_UTC) - Utc::now();
-                if difference.num_seconds() <= 0 {
-                    info!(category = "[event_loop]"; "Graceful shutdown period elapsed, forcing disconnection...");
-                    break;
-                }
-                let duration = difference.to_std().unwrap_or(DURATION_ZERO);
-                trace!(category = "[event_loop]"; "Stop requested, will wait for {} before forcing disconnection...", pretty_format(duration));
-                duration
-            } else {
-                DURATION_MAX
-            };
-            if log_enabled!(log::Level::Trace) {
-                if wait_duration.as_secs() == u64::MAX {
-                    trace!(category = "[event_loop]"; "Waiting indefinitely for events...");
-                } else {
-                    trace!(category = "[event_loop]"; "Waiting for events for {}...", pretty_format(wait_duration));
-                }
             }
+            trace!(category = "[event_loop]"; "Waiting indefinitely for events...");
             tokio::select! {
-                sleep_result = self
-                    .cancellation_token
-                    .wait_on(time::sleep(wait_duration)) => {
-                    if let Ok(()) = sleep_result {
-                        error!(category = "[event_loop]"; "Forcing disconnection...");
-                        break;
-                    }
-                    info!(category = "[event_loop]"; "Received Ctrl+C, shutting down...");
-                    should_stop = true;
-                    stop_at = Some(Utc::now() + DURATION_UNTIL_SHUTDOWN);
-                    if self.is_connected() == Some(true) {
-                        trace!(category = "[event_loop]"; "Was waiting for event loop and connected, will make unavailable and disconnect after stop request...");
-                        self.tx.send(ChannelMessages::Stopping)?;
-                    } else {
-                        trace!(category = "[event_loop]"; "Was waiting for event loop and not connected, no need to wait for event loop and will skip make unavailable and disconnecting...");
+                sleep_result = self.event_loop_cancellation_token.wait_on(time::sleep(DURATION_MAX)) => {
+                    if sleep_result.is_err() {
+                        info!(category = "[event_loop]"; "Received Ctrl+C, shutting down...");
                         break;
                     }
                 }
                 loop_result = eventloop.poll() => {
                     trace!(category = "[event_loop]"; "Event loop polled, result: {loop_result:?}");
-                    match self.deal_with_event(loop_result, should_stop) {
+                    match self.deal_with_event(loop_result) {
                         Ok(event_handled) => {
-                            should_wait = event_handled.should_wait;
-                            if event_handled.should_break {
+                            should_event_loop_pooling_wait = event_handled.should_event_loop_pooling_wait;
+                            if event_handled.should_stop_event_loop {
                                 trace!(category = "[event_loop]"; "Event handled, breaking as requested...");
                                 break;
                             }
@@ -513,17 +536,21 @@ impl DeviceManager {
                         }
                         Err(EventHandlingError::Connection(msg)) => {
                             error!(category = "[event_loop]"; "Connection error ({msg}), exiting event loop...");
+                            self.stopped_tasks
+                                .store(self.stopped_tasks.load() | StoppedTasks::EventLoop);
                             return Err(Error::Connection(format!("{msg} in the event loop.")));
                         }
                         Err(e) => {
                             error!(category = "[event_loop]"; "Error dealing with event: {e}, will retry in 5 seconds...");
-                            should_wait = true;
+                            should_event_loop_pooling_wait = true;
                         }
                     }
                 }
             }
         }
-        debug!(category = "[event_loop]"; "Exiting event loop");
+        debug!(category = "[event_loop]"; "Exiting event loop pool");
+        self.stopped_tasks
+            .store(self.stopped_tasks.load() | StoppedTasks::EventLoop);
         Ok(())
     }
 
@@ -553,20 +580,13 @@ impl DeviceManager {
         devices: Devices,
         device_providers: Arc<Vec<Box<dyn DeviceProvider>>>,
     ) -> Result<()> {
-        let mut connection_manager = ConnectionManager::new(devices.clone());
+        let mut publish_manager = PublishManager::new(devices.clone());
         loop {
             trace!(category = "[message_traffic]"; "Before waiting for next message...");
-            match self.cancellation_token.wait_on(rx.changed()).await {
-                Err(_) => {
-                    trace!(category = "[message_traffic]"; "Cancellation requested, stopping connection manager and update publishing loop...");
-                    connection_manager
-                        .deal_with_connection_status_change_and_manage_periodic_publishing(
-                            &self,
-                            device_providers.clone(),
-                            false,
-                        )
-                        .await?;
-                    continue;
+            match self.must_stop_cancellation_token.wait_on(rx.changed()).await {
+                Err(err) => {
+                    trace!(category = "[message_traffic]"; "Immediate cancellation requested, will stop now...");
+                    return Err(err.into());
                 }
                 Ok(Err(_)) => {
                     trace!(category = "[message_traffic]"; "Channel closed, exiting message sync loop");
@@ -580,7 +600,7 @@ impl DeviceManager {
             trace!(category = "[message_traffic]"; "Got next channel message: {message:?}");
             match message {
                 ChannelMessages::Connected(is_connected_message) => {
-                    connection_manager
+                    publish_manager
                         .deal_with_connection_status_change_and_manage_periodic_publishing(
                             &self,
                             device_providers.clone(),
@@ -589,11 +609,11 @@ impl DeviceManager {
                         .await?;
                 }
                 ChannelMessages::Message(publish_result) => {
-                    self.deal_with_command(publish_result.clone(), devices.clone()).await?;
+                    self.deal_with_command(publish_result, devices.clone()).await?;
                 }
                 ChannelMessages::Stopping => {
                     trace!(category = "[message_traffic]"; "Received stop message, will stop state publishing...");
-                    connection_manager
+                    publish_manager
                         .deal_with_connection_status_change_and_manage_periodic_publishing(
                             &self,
                             device_providers.clone(),
@@ -602,16 +622,18 @@ impl DeviceManager {
                         .await?;
                     trace!(category = "[message_traffic]"; "Processing stop message, will make devices unavailable...");
                     self.make_unavailable().await?;
+                    trace!(category = "[message_traffic]"; "Processing stop message, exiting message sync loop...");
+                    publish_manager.stop().await;
                     trace!(category = "[message_traffic]"; "Processing stop message, will disconnect...");
                     self.disconnect()?;
-                    trace!(category = "[message_traffic]"; "Processing stop message, exiting message sync loop...");
-                    connection_manager.stop().await;
                     trace!(category = "[message_traffic]"; "Processed stop message, done.");
                     break;
                 }
             }
             trace!(category = "[message_traffic]"; "Channel loop iteration complete");
         }
+        self.stopped_tasks
+            .store(self.stopped_tasks.load() | StoppedTasks::MessageTraffic);
         trace!(category = "[message_traffic]"; "Exiting message traffic handling function");
         Ok(())
     }
@@ -633,7 +655,7 @@ impl DeviceManager {
         F: IntoFuture,
     {
         let result = self
-            .cancellation_token
+            .must_stop_cancellation_token
             .wait_on(timeout(self.default_timeout, future.into_future()))
             .await??;
         Ok(result)
@@ -652,14 +674,14 @@ pub struct PublishResult {
     pub payload: String,
 }
 
-struct ConnectionManager {
+struct PublishManager {
     connected: bool,
     join_handle: Option<JoinHandle<()>>,
     cancellation_token_source: Option<CancellationTokenSource>,
     devices: Devices,
 }
 
-impl ConnectionManager {
+impl PublishManager {
     fn new(devices: Devices) -> Self {
         Self {
             connected: false,
@@ -670,7 +692,7 @@ impl ConnectionManager {
     }
 
     async fn stop(mut self) {
-        trace!("Stopping ConnectionManager, cancelling periodic publishing task...");
+        trace!("Stopping PublishManager, cancelling periodic publishing task...");
         if let Some(cancellation_token_source) = &mut self.cancellation_token_source {
             cancellation_token_source.cancel().await;
         }
@@ -810,8 +832,7 @@ impl ConnectionManager {
                                 }
                                 if let Err(err) = device_manager
                                     .publish_removed_entities_discovery(
-                                        Devices::new_from_many_shared_devices(devices_vec, cancellation_token.clone())
-                                            .await,
+                                        Devices::new_from_many_shared_devices(devices_vec).await,
                                     )
                                     .await
                                 {
@@ -935,7 +956,6 @@ mod tests {
             "p".to_string(),
             true,
             Duration::from_millis(10),
-            CancellationToken::default(),
         )
         .unwrap();
         manager
@@ -1186,7 +1206,7 @@ mod tests {
         let manager = make_device_manager();
         manager.set_connected(true);
         manager
-            .initialize(Devices::new_from_single_device(device, CancellationToken::default()))
+            .initialize(Devices::new_from_single_device(device))
             .await
             .unwrap();
     }
@@ -1227,7 +1247,7 @@ mod tests {
                     topic: "some/command".to_string(),
                     payload: "ignored".to_string(),
                 },
-                Devices::new_from_single_device(device, CancellationToken::default()),
+                Devices::new_from_single_device(device),
             )
             .await
             .unwrap();
@@ -1290,7 +1310,7 @@ mod tests {
                     topic: "some/command".to_string(),
                     payload: "ignored".to_string(),
                 },
-                Devices::new_from_single_device(device, CancellationToken::default()),
+                Devices::new_from_single_device(device),
             )
             .await
             .unwrap();
@@ -1346,7 +1366,7 @@ mod tests {
             .times(1);
         let mut device = make_empty_device();
         device.data_handlers.push(Box::new(data_handler));
-        let devices = Devices::new_from_single_device(device, CancellationToken::default());
+        let devices = Devices::new_from_single_device(device);
 
         let manager = make_device_manager();
         manager.set_connected(true);
@@ -1358,20 +1378,20 @@ mod tests {
     #[serial]
     async fn test_connection_manager_new() {
         let devices = make_empty_devices();
-        let connection_manager = ConnectionManager::new(devices);
+        let publish_manager = PublishManager::new(devices);
 
-        assert!(!connection_manager.connected);
-        assert!(connection_manager.join_handle.is_none());
-        assert!(connection_manager.cancellation_token_source.is_none());
+        assert!(!publish_manager.connected);
+        assert!(publish_manager.join_handle.is_none());
+        assert!(publish_manager.cancellation_token_source.is_none());
     }
 
     #[tokio::test]
     #[serial]
     async fn test_connection_manager_stop_with_no_task() {
         let devices = make_empty_devices();
-        let connection_manager = ConnectionManager::new(devices);
+        let publish_manager = PublishManager::new(devices);
 
-        connection_manager.stop().await;
+        publish_manager.stop().await;
     }
 
     #[tokio::test]
@@ -1394,21 +1414,21 @@ mod tests {
         });
 
         let devices = make_empty_devices();
-        let mut connection_manager = ConnectionManager::new(devices.clone());
+        let mut publish_manager = PublishManager::new(devices.clone());
         let manager = make_device_manager();
 
-        assert!(!connection_manager.connected);
+        assert!(!publish_manager.connected);
 
-        connection_manager
+        publish_manager
             .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), true)
             .await
             .unwrap();
 
-        assert!(connection_manager.connected);
-        assert!(connection_manager.join_handle.is_some());
-        assert!(connection_manager.cancellation_token_source.is_some());
+        assert!(publish_manager.connected);
+        assert!(publish_manager.join_handle.is_some());
+        assert!(publish_manager.cancellation_token_source.is_some());
 
-        connection_manager.stop().await;
+        publish_manager.stop().await;
     }
 
     #[tokio::test]
@@ -1431,26 +1451,26 @@ mod tests {
         });
 
         let devices = make_empty_devices();
-        let mut connection_manager = ConnectionManager::new(devices.clone());
+        let mut publish_manager = PublishManager::new(devices.clone());
         let manager = make_device_manager();
 
-        connection_manager
+        publish_manager
             .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), true)
             .await
             .unwrap();
 
-        let first_handle_id = connection_manager.join_handle.as_ref().map(JoinHandle::id).unwrap();
+        let first_handle_id = publish_manager.join_handle.as_ref().map(JoinHandle::id).unwrap();
 
-        connection_manager
+        publish_manager
             .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), true)
             .await
             .unwrap();
 
-        let second_handle_id = connection_manager.join_handle.as_ref().map(JoinHandle::id).unwrap();
+        let second_handle_id = publish_manager.join_handle.as_ref().map(JoinHandle::id).unwrap();
 
         assert_eq!(first_handle_id, second_handle_id);
 
-        connection_manager.stop().await;
+        publish_manager.stop().await;
     }
 
     #[tokio::test]
@@ -1459,18 +1479,18 @@ mod tests {
         let _c = create_mock_client(|_| {});
 
         let devices = make_empty_devices();
-        let mut connection_manager = ConnectionManager::new(devices.clone());
+        let mut publish_manager = PublishManager::new(devices.clone());
         let manager = make_device_manager();
 
-        assert!(!connection_manager.connected);
+        assert!(!publish_manager.connected);
 
-        connection_manager
+        publish_manager
             .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, Arc::new(vec![]), false)
             .await
             .unwrap();
 
-        assert!(!connection_manager.connected);
-        assert!(connection_manager.join_handle.is_none());
+        assert!(!publish_manager.connected);
+        assert!(publish_manager.join_handle.is_none());
     }
 
     #[tokio::test]
@@ -1493,27 +1513,27 @@ mod tests {
         });
 
         let devices = make_empty_devices();
-        let mut connection_manager = ConnectionManager::new(devices.clone());
+        let mut publish_manager = PublishManager::new(devices.clone());
         let mut device_manager = make_device_manager();
         device_manager.publish_interval = Duration::from_millis(1000);
         let mut cancellation_token_source = CancellationTokenSource::new();
-        device_manager.cancellation_token = cancellation_token_source.create_token().await;
+        device_manager.must_stop_cancellation_token = cancellation_token_source.create_token().await;
 
-        connection_manager
+        publish_manager
             .deal_with_connection_status_change_and_manage_periodic_publishing(&device_manager, Arc::new(vec![]), true)
             .await
             .unwrap();
 
-        assert!(connection_manager.connected);
-        assert!(connection_manager.join_handle.is_some());
+        assert!(publish_manager.connected);
+        assert!(publish_manager.join_handle.is_some());
 
-        connection_manager
+        publish_manager
             .deal_with_connection_status_change_and_manage_periodic_publishing(&device_manager, Arc::new(vec![]), false)
             .await
             .unwrap();
 
-        assert!(!connection_manager.connected);
-        assert!(connection_manager.join_handle.is_none());
-        assert!(connection_manager.cancellation_token_source.is_none());
+        assert!(!publish_manager.connected);
+        assert!(publish_manager.join_handle.is_none());
+        assert!(publish_manager.cancellation_token_source.is_none());
     }
 }

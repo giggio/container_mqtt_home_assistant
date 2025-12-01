@@ -336,7 +336,7 @@ impl DeviceProvider for DockerDeviceProvider {
         let mut devices_vec =
             self.create_container_devices(containers, &host_identifier, &availability_topic, &cancellation_token);
         devices_vec.push(host_device);
-        let devices = Devices::new_from_many_devices(devices_vec, cancellation_token);
+        let devices = Devices::new_from_many_devices(devices_vec);
         Ok(devices)
     }
 
@@ -371,7 +371,9 @@ impl DeviceProvider for DockerDeviceProvider {
             .filter(|(id, metadata)| !containers.contains(id) && !metadata.contains(&HOST_DEVICE_METADATA.to_string()))
             .map(|(id, _)| id)
             .collect::<HashSet<String>>();
-        let devices_removed = devices.remove_devices(&devices_ids_to_remove).await?;
+        let devices_removed = devices
+            .remove_devices(&devices_ids_to_remove, cancellation_token)
+            .await?;
         Ok(devices_removed)
     }
 
@@ -411,7 +413,7 @@ impl DeviceProvider for DockerDeviceProvider {
             .iter()
             .map(|d| d.details.identifier.clone())
             .collect::<HashSet<String>>();
-        devices.add_devices(devices_to_add).await?;
+        devices.add_devices(devices_to_add, cancellation_token).await?;
         Ok(ids)
     }
 }
@@ -1393,58 +1395,55 @@ mod tests {
         });
         let provider_name = "My Machine";
         let host_identifier = slugify(provider_name);
-        let existing_devices = Devices::new_from_many_devices(
-            vec![
-                Device::new_with_entities(
-                    DeviceDetails {
-                        name: provider_name.to_string(),
-                        identifier: host_identifier.clone(),
-                        manufacturer: "Giovanni Bassi".to_string(),
-                        sw_version: env!("CARGO_PKG_VERSION").to_string(),
-                        via_device: None,
-                    },
-                    DeviceOrigin {
-                        name: "docker-status-mqtt".to_string(),
-                        sw: env!("CARGO_PKG_VERSION").to_string(),
-                        url: "https://github.com/giggio/docker-status-mqtt".to_string(),
-                    },
-                    "availability/topic".to_string(),
-                    vec![Box::new(Sensor::new_simple(
-                        host_identifier.clone(),
-                        "Total containers",
-                        "mdi:truck-cargo-container",
-                    ))],
-                    vec![],
-                    "docker_device_provider".to_string(),
-                    CancellationToken::default(),
-                )
-                .with_metadata(vec![Box::new(HOST_DEVICE_METADATA.to_string())]),
-                Device::new_with_entities(
-                    DeviceDetails {
-                        name: "container1".to_string(),
-                        identifier: "container1".to_string(),
-                        manufacturer: "Giovanni Bassi".to_string(),
-                        sw_version: env!("CARGO_PKG_VERSION").to_string(),
-                        via_device: None,
-                    },
-                    DeviceOrigin {
-                        name: "docker-status-mqtt".to_string(),
-                        sw: env!("CARGO_PKG_VERSION").to_string(),
-                        url: "x".to_string(),
-                    },
-                    "availability/topic".to_string(),
-                    vec![Box::new(Sensor::new_simple(
-                        "container1".to_string(),
-                        "Log".to_string(),
-                        "mdi:script-text-outline".to_string(),
-                    ))],
-                    vec![],
-                    "docker_device_provider".to_string(),
-                    CancellationToken::default(),
-                ),
-            ],
-            CancellationToken::default(),
-        );
+        let existing_devices = Devices::new_from_many_devices(vec![
+            Device::new_with_entities(
+                DeviceDetails {
+                    name: provider_name.to_string(),
+                    identifier: host_identifier.clone(),
+                    manufacturer: "Giovanni Bassi".to_string(),
+                    sw_version: env!("CARGO_PKG_VERSION").to_string(),
+                    via_device: None,
+                },
+                DeviceOrigin {
+                    name: "docker-status-mqtt".to_string(),
+                    sw: env!("CARGO_PKG_VERSION").to_string(),
+                    url: "https://github.com/giggio/docker-status-mqtt".to_string(),
+                },
+                "availability/topic".to_string(),
+                vec![Box::new(Sensor::new_simple(
+                    host_identifier.clone(),
+                    "Total containers",
+                    "mdi:truck-cargo-container",
+                ))],
+                vec![],
+                "docker_device_provider".to_string(),
+                CancellationToken::default(),
+            )
+            .with_metadata(vec![Box::new(HOST_DEVICE_METADATA.to_string())]),
+            Device::new_with_entities(
+                DeviceDetails {
+                    name: "container1".to_string(),
+                    identifier: "container1".to_string(),
+                    manufacturer: "Giovanni Bassi".to_string(),
+                    sw_version: env!("CARGO_PKG_VERSION").to_string(),
+                    via_device: None,
+                },
+                DeviceOrigin {
+                    name: "docker-status-mqtt".to_string(),
+                    sw: env!("CARGO_PKG_VERSION").to_string(),
+                    url: "x".to_string(),
+                },
+                "availability/topic".to_string(),
+                vec![Box::new(Sensor::new_simple(
+                    "container1".to_string(),
+                    "Log".to_string(),
+                    "mdi:script-text-outline".to_string(),
+                ))],
+                vec![],
+                "docker_device_provider".to_string(),
+                CancellationToken::default(),
+            ),
+        ]);
         let device_provider = DockerDeviceProvider::new(provider_name).unwrap();
         let removed = device_provider
             .remove_missing_devices(&existing_devices, CancellationToken::default())

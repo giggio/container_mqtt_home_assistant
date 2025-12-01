@@ -8,6 +8,7 @@
 
 #[macro_use]
 extern crate log;
+
 use std::sync::Arc;
 
 use clap::Parser;
@@ -70,8 +71,6 @@ async fn run(cli: Cli) -> Result<()> {
                 device_providers.push(Box::new(DockerDeviceProvider::new(device_name)?));
             }
             let device_providers_arc = Arc::new(device_providers);
-            let mut cancellation_token_source = CancellationTokenSource::new();
-            deal_with_ctrl_c(cancellation_token_source.clone());
             let (mut device_manager, eventloop, rx) = DeviceManager::new(
                 mqtt_broker_info.host,
                 mqtt_broker_info.port,
@@ -80,8 +79,9 @@ async fn run(cli: Cli) -> Result<()> {
                 mqtt_broker_info.password,
                 mqtt_broker_info.disable_tls,
                 publish_interval,
-                cancellation_token_source.create_token().await,
             )?;
+            let mut cancellation_token_source = CancellationTokenSource::new();
+            deal_with_ctrl_c(cancellation_token_source.clone(), device_manager.clone());
             let devices = Devices::from_device_providers(
                 device_providers_arc.clone(),
                 device_manager.availability_topic(),
@@ -96,18 +96,34 @@ async fn run(cli: Cli) -> Result<()> {
     if cli.verbose {
         info!("Shutting down...");
     }
+    debug!("Shutting down...");
     Ok(())
 }
 
-fn deal_with_ctrl_c(mut cancellation_token_source: CancellationTokenSource) {
+fn deal_with_ctrl_c(mut cancellation_token_source: CancellationTokenSource, mut device_manager: DeviceManager) {
     tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                trace!("Ctrl-C received, cancelling cancellation token source...");
-                cancellation_token_source.cancel().await;
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            eprintln!("Error listening for Ctrl-C signal: {err}");
+            std::process::exit(1);
+        }
+        trace!("Ctrl-C received, cancelling cancellation token source...");
+        cancellation_token_source.cancel().await;
+        trace!("Ctrl-C received, stopping device manager...");
+        tokio::select! {
+            stop_result = device_manager.stop() => {
+                if let Err(e) = stop_result {
+                    error!("Device manager stopped with error: {e}");
+                } else {
+                    trace!("Device manager stopped successfully");
+                }
             }
-            Err(e) => {
-                error!("Error listening for Ctrl-C signal: {e}");
+            _ = tokio::time::sleep(device_manager::DURATION_UNTIL_SHUTDOWN) => {
+                trace!("Force stopping device manager...");
+                if let Err(e) = device_manager.force_stop().await {
+                    error!("Error force stopping device manager: {e}");
+                } else {
+                    trace!("Device manager force stopped successfully");
+                }
             }
         }
     });
