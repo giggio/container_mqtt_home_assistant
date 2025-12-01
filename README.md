@@ -1,6 +1,8 @@
 # Docker Status MQTT
 
-This app ...
+This app will report the status of all your Docker containers to MQTT.
+
+It is designed to work with the protocols of Home Assistant's MQTT integration.
 
 ## Quick Start
 
@@ -18,7 +20,7 @@ TBD
 
 Bring up the Home Assistant server using docker compose (compose.yaml is in docker_status_mqtt directory).
 
-Access it at http://localhost:8123/
+Access it at <http://localhost:8123/>
 
 Install the MQTT integration on Home Assistant.
 
@@ -45,7 +47,7 @@ docker logs -f mlogs
 ## Contributing
 
 Questions, comments, bug reports, and pull requests are all welcome.  Submit them at
-[the project on GitHub](https://github.com/giggio/tbd/).
+[the project on Codeberg](https://codeberg.com/giggio/docker_status_mqtt_home_assistant/).
 
 Bug reports that include steps-to-reproduce (including code) are the
 best. Even better, make them in the form of pull requests.
