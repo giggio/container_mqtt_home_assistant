@@ -44,6 +44,14 @@ View Mosquitto logs:
 docker logs -f mlogs
 ```
 
+## Releasing
+
+Releases are being created using Make and Nix cross compilation. See [./cross-build.nix](./cross-build.nix) and
+[./flake.nix](./flake.nix) and [./Makefile](./Makefile).
+
+To release, simply run `make`, which will build static binaries for amd64 and arm64 using musl, then create the images
+and publish them to Docker Hub.
+
 ## Contributing
 
 Questions, comments, bug reports, and pull requests are all welcome.  Submit them at

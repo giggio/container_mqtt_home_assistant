@@ -22,15 +22,17 @@ on:
 jobs:
   build:
     name: cargo build
-    runs-on: codeberg-small
+    runs-on: docker
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare Rust toolchain
-        uses: https://codeberg.org/wackbyte/rust-toolchain@trunk
+      - name: Install Nix
+        uses: https://github.com/DeterminateSystems/nix-installer-action.git@main
+      - name: Set USER for Cachix
+        run: echo "USER=root" >> $GITHUB_ENV
+      - name: Set up cache
+        uses: https://github.com/cachix/cachix-action.git@v15
         with:
-          toolchain: nightly
-          components: clippy
-      - name: cargo build
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: cargo test
-        run: cargo test --all-features
+          name: cmha
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build and test
+        run: nix build --print-build-logs
