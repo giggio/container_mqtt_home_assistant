@@ -5,7 +5,7 @@
             "name": "Debug (nvim - codelldb)",
             "type": "lldb",
             "request": "launch",
-            "program": "./target/debug/docker_status_mqtt",
+            "program": "./target/debug/cmha",
             "cwd": "${workspaceFolder}",
             "stopOnEntry": false,
             "args": [],
@@ -14,7 +14,7 @@
             "name": "Debug test (nvim - codelldb)",
             "type": "lldb",
             "request": "launch",
-            "program": "./target/debug/deps/docker_status_mqtt-67ac22f37e896e09",
+            "program": "./target/debug/deps/cmha-67ac22f37e896e09",
             "cwd": "${workspaceFolder}",
             "stopOnEntry": false,
             "args": [],
@@ -29,11 +29,11 @@
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=docker_status_mqtt-bin",
-                    "--package=docker_status_mqtt-bin"
+                    "--bin=cmha-bin",
+                    "--package=cmha-bin"
                 ],
                 "filter": {
-                    "name": "docker_status_mqtt-bin",
+                    "name": "cmha-bin",
                     "kind": "bin"
                 },
             },
@@ -47,11 +47,11 @@
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=docker_status_mqtt-bin",
-                    "--package=docker_status_mqtt-bin"
+                    "--bin=cmha-bin",
+                    "--package=cmha-bin"
                 ],
                 "filter": {
-                    "name": "docker_status_mqtt-bin",
+                    "name": "cmha-bin",
                     "kind": "bin"
                 },
             },
@@ -61,16 +61,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'docker_status_mqtt-bin'",
+            "name": "Debug unit tests in executable 'cmha-bin'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=docker_status_mqtt-bin",
-                    "--package=docker_status_mqtt-bin"
+                    "--bin=cmha-bin",
+                    "--package=cmha-bin"
                 ],
                 "filter": {
-                    "name": "docker_status_mqtt-bin",
+                    "name": "cmha-bin",
                     "kind": "bin"
                 }
             },

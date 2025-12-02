@@ -1,5 +1,5 @@
 [package]
-name = "docker_status_mqtt"
+name = "cmha"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
@@ -8,7 +8,7 @@ license = "MIT"
 workspace = true
 
 [dependencies]
-docker_status_mqtt_proc_macros = { path = "../docker_status_mqtt_proc_macros" }
+cmha_proc_macros = { path = "../cmha_proc_macros" }
 bollard = "0.19.3"
 chrono = { version = "0.4", features = ["serde"] }
 log = { version = "0.4.28", features = ["kv"] }

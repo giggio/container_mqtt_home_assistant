@@ -132,9 +132,9 @@ mod tests {
 
     #[test]
     fn test_slugify_mqtt_node_ids() {
-        assert_eq!(slugify("mqtt_docker"), "mqtt_docker");
-        assert_eq!(slugify("MQTT Docker"), "mqtt_docker");
-        assert_eq!(slugify("mqtt-docker-node"), "mqtt_docker_node");
+        assert_eq!(slugify("mqtt_cmha"), "mqtt_cmha");
+        assert_eq!(slugify("MQTT CMHA"), "mqtt_cmha");
+        assert_eq!(slugify("mqtt-cmha-node"), "mqtt_cmha_node");
         assert_eq!(slugify("My Home Server"), "my_home_server");
     }
 

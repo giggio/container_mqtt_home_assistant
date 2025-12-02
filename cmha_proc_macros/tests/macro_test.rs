@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use docker_status_mqtt_proc_macros::*;
+    use cmha_proc_macros::*;
 
     pub struct EntityDetails {
         pub id: String,

@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn test_parse_slug_basic() {
-        assert_eq!(parse_slug("mqtt_docker").unwrap(), "mqtt_docker");
+        assert_eq!(parse_slug("mqtt_cmha").unwrap(), "mqtt_cmha");
         assert_eq!(parse_slug("My Device").unwrap(), "my_device");
         assert_eq!(parse_slug("Test-Device-123").unwrap(), "test_device_123");
     }
@@ -115,7 +115,7 @@ mod tests {
     }
 
     const BASIC_ARGS: [&str; 10] = [
-        "docker_status_mqtt",
+        "cmha",
         "run",
         "--host",
         "localhost",

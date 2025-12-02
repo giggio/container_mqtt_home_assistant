@@ -33,18 +33,18 @@ use crate::{
 const HOST_DEVICE_METADATA: &str = "host_device";
 
 #[cfg(not(test))]
-pub mod docker_client {
-    pub use bollard::Docker;
+pub mod container_engine_client {
+    pub use bollard::Docker as ContainerEngine;
 }
 
-use docker_client::Docker;
+use container_engine_client::ContainerEngine;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error(transparent)]
-    Docker(#[from] bollard::errors::Error),
+    Container(#[from] bollard::errors::Error),
     #[error("No stats available for the container")]
     NoStats,
     #[error("Unknown error")]
@@ -63,15 +63,15 @@ impl From<bollard::errors::Error> for crate::devices::Error {
     }
 }
 
-pub struct DockerDeviceProvider {
-    docker: Docker,
+pub struct ContainerDeviceProvider {
+    container_engine: ContainerEngine,
     provider_name: String,
 }
 
-impl DockerDeviceProvider {
+impl ContainerDeviceProvider {
     pub fn new(provider_name: impl Into<String>) -> Result<Self> {
         Ok(Self {
-            docker: Docker::connect_with_socket_defaults()?,
+            container_engine: ContainerEngine::connect_with_socket_defaults()?,
             provider_name: provider_name.into(),
         })
     }
@@ -104,7 +104,7 @@ impl DockerDeviceProvider {
             ));
             let log_text_data = Box::new(LogText {
                 state_topic: log_text.details().get_topic_for_state(None),
-                docker: self.docker.clone(),
+                container_engine: self.container_engine.clone(),
                 container_name: container_name.clone(),
                 should_get_logs: should_get_logs.clone(),
             });
@@ -132,7 +132,7 @@ impl DockerDeviceProvider {
             let container_statistics_data = Box::new(ContainerStats {
                 used_cpu_state_topic: used_cpus.details().get_topic_for_state(None),
                 used_memory_state_topic: used_memory.details().get_topic_for_state(None),
-                docker: self.docker.clone(),
+                container_engine: self.container_engine.clone(),
                 container_name: container_name.clone(),
                 last_cpu_stats: Arc::new(RwLock::new(None)),
             });
@@ -143,25 +143,25 @@ impl DockerDeviceProvider {
             );
             let restart_button_data = Box::new(RestartButton {
                 command_topic: restart_button.details().get_topic_for_command(None),
-                docker: self.docker.clone(),
+                container_engine: self.container_engine.clone(),
                 container_name: container_name.clone(),
             });
             let start_button = Box::new(Button::new(&device_identifier, "Start", "mdi:play").can_be_made_unavailable());
             let start_button_data = Box::new(StartButton {
                 command_topic: start_button.details().get_topic_for_command(None),
-                docker: self.docker.clone(),
+                container_engine: self.container_engine.clone(),
                 container_name: container_name.clone(),
             });
             let stop_button = Box::new(Button::new(&device_identifier, "Stop", "mdi:stop").can_be_made_unavailable());
             let stop_button_data = Box::new(StopButton {
                 command_topic: stop_button.details().get_topic_for_command(None),
-                docker: self.docker.clone(),
+                container_engine: self.container_engine.clone(),
                 container_name: container_name.clone(),
             });
             let remove_button = Box::new(Button::new(&device_identifier, "Remove", "mdi:delete"));
             let remove_button_data = Box::new(RemoveButton {
                 command_topic: remove_button.details().get_topic_for_command(None),
-                docker: self.docker.clone(),
+                container_engine: self.container_engine.clone(),
                 container_name: container_name.clone(),
             });
             let container_health: Box<Sensor> =
@@ -173,7 +173,7 @@ impl DockerDeviceProvider {
                 start_button_availability_topic: start_button.details().get_topic_for_availability(None),
                 restart_button_availability_topic: restart_button.details().get_topic_for_availability(None),
                 stop_button_availability_topic: stop_button.details().get_topic_for_availability(None),
-                docker: self.docker.clone(),
+                container_engine: self.container_engine.clone(),
                 container_name: container_name.clone(),
             });
             let container_image: Box<Sensor> = EntityDetails::new(&device_identifier, "Image", "mdi:oci").into();
@@ -192,9 +192,9 @@ impl DockerDeviceProvider {
                     via_device: Some(host_identifier.to_owned()),
                 },
                 DeviceOrigin {
-                    name: "docker-status-mqtt".to_string(),
+                    name: "cmha".to_string(),
                     sw: env!("CARGO_PKG_VERSION").to_string(),
-                    url: "https://github.com/giggio/docker-status-mqtt".to_string(),
+                    url: "https://codeberg.org/giggio/container_mqtt_home_assistant".to_string(),
                 },
                 availability_topic.to_owned(),
                 vec![
@@ -231,7 +231,7 @@ impl DockerDeviceProvider {
 }
 
 #[async_trait]
-impl DeviceProvider for DockerDeviceProvider {
+impl DeviceProvider for ContainerDeviceProvider {
     fn id(&self) -> String {
         self.provider_name.clone()
     }
@@ -242,7 +242,7 @@ impl DeviceProvider for DockerDeviceProvider {
     ) -> crate::devices::Result<Devices> {
         let containers = cancellation_token
             .wait_on(
-                self.docker
+                self.container_engine
                     .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build())),
             )
             .await??;
@@ -254,7 +254,7 @@ impl DeviceProvider for DockerDeviceProvider {
         ));
         let host_version_data = Box::new(HostVersion {
             state_topic: host_version.details().get_topic_for_state(None),
-            docker: self.docker.clone(),
+            container_engine: self.container_engine.clone(),
         });
         let images = Box::new(Sensor::new_with_details(
             EntityDetails::new(host_identifier.clone(), "Images", "mdi:oci").has_attributes(),
@@ -289,7 +289,7 @@ impl DeviceProvider for DockerDeviceProvider {
                 number_of_containers_attributes_state_topic: number_of_containers
                     .details()
                     .get_topic_for_state(Some("attributes")),
-                docker: self.docker.clone(),
+                container_engine: self.container_engine.clone(),
             }
             .debounce(Duration::hours(1)),
         );
@@ -302,7 +302,7 @@ impl DeviceProvider for DockerDeviceProvider {
             NetworkInfo {
                 state_topic: network_info.details().get_topic_for_state(None),
                 state_attributes_topic: network_info.details().get_topic_for_state(Some("attributes")),
-                docker: self.docker.clone(),
+                container_engine: self.container_engine.clone(),
             }
             .debounce(Duration::hours(1)),
         );
@@ -315,9 +315,9 @@ impl DeviceProvider for DockerDeviceProvider {
                 via_device: None,
             },
             DeviceOrigin {
-                name: "docker-status-mqtt".to_string(),
+                name: "cmha".to_string(),
                 sw: env!("CARGO_PKG_VERSION").to_string(),
-                url: "https://github.com/giggio/docker-status-mqtt".to_string(),
+                url: "https://codeberg.org/giggio/container_mqtt_home_assistant".to_string(),
             },
             availability_topic.clone(),
             vec![
@@ -347,7 +347,7 @@ impl DeviceProvider for DockerDeviceProvider {
     ) -> crate::devices::Result<Vec<Arc<RwLock<Device>>>> {
         let containers = cancellation_token
             .wait_on(
-                self.docker
+                self.container_engine
                     .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build())),
             )
             .await??
@@ -385,7 +385,7 @@ impl DeviceProvider for DockerDeviceProvider {
     ) -> crate::devices::Result<HashSet<String>> {
         let containers = cancellation_token
             .wait_on(
-                self.docker
+                self.container_engine
                     .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build())),
             )
             .await??;
@@ -421,7 +421,7 @@ impl DeviceProvider for DockerDeviceProvider {
 #[derive(Clone, Debug)]
 struct LogText {
     state_topic: String,
-    docker: Docker,
+    container_engine: ContainerEngine,
     container_name: String,
     should_get_logs: Arc<AtomicBool>,
 }
@@ -436,7 +436,7 @@ impl HandlesData for LogText {
         }
         self.should_get_logs.store(false, std::sync::atomic::Ordering::SeqCst);
         let logs = cancellation_token.wait_on(
-            self.docker
+            self.container_engine
                 .logs(
                     &self.container_name,
                     Some(LogsOptionsBuilder::new().stdout(true).stderr(true).tail("3").build()),
@@ -482,7 +482,7 @@ impl HandlesData for GetLogsButton {
 #[derive(Debug)]
 struct NetworkInfo {
     state_topic: String,
-    docker: Docker,
+    container_engine: ContainerEngine,
     state_attributes_topic: String,
 }
 #[async_trait]
@@ -492,7 +492,7 @@ impl HandlesData for NetworkInfo {
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
         let networks = cancellation_token
-            .wait_on(self.docker.list_networks(None::<ListNetworksOptions>))
+            .wait_on(self.container_engine.list_networks(None::<ListNetworksOptions>))
             .await??;
         let network_count = networks.len();
         Ok(hashmap! {
@@ -515,7 +515,7 @@ impl HandlesData for NetworkInfo {
 #[derive(Debug)]
 struct HostVersion {
     state_topic: String,
-    docker: Docker,
+    container_engine: ContainerEngine,
 }
 #[async_trait]
 impl HandlesData for HostVersion {
@@ -523,7 +523,7 @@ impl HandlesData for HostVersion {
         &self,
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
-        let info = cancellation_token.wait_on(self.docker.info()).await??;
+        let info = cancellation_token.wait_on(self.container_engine.info()).await??;
         if let Some(version) = info.server_version {
             Ok(hashmap! {self.state_topic.clone() => version})
         } else {
@@ -534,7 +534,7 @@ impl HandlesData for HostVersion {
 
 #[derive(Debug)]
 struct DiskFree {
-    docker: Docker,
+    container_engine: ContainerEngine,
     images_state_topic: String,
     images_attributes_state_topic: String,
     volumes_state_topic: String,
@@ -552,7 +552,7 @@ impl HandlesData for DiskFree {
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
         let data_usage = cancellation_token
-            .wait_on(self.docker.df(None::<DataUsageOptions>))
+            .wait_on(self.container_engine.df(None::<DataUsageOptions>))
             .await??;
         if let Some(image_summary) = data_usage.images
             && let Some(volume_summary) = data_usage.volumes
@@ -652,7 +652,7 @@ impl HandlesData for DiskFree {
                     "containers_reclaimable_kib": (containers_reclaimable / 1024),
                 }).to_string(),
             };
-            trace!("Got df data from Docker: {data:?}");
+            trace!("Got df data from ContainerEngine: {data:?}");
             Ok(data)
         } else {
             Ok(HashMap::new())
@@ -663,7 +663,7 @@ impl HandlesData for DiskFree {
 #[derive(Debug)]
 struct ContainerStatus {
     state_topic: String,
-    docker: Docker,
+    container_engine: ContainerEngine,
     container_name: String,
     start_button_availability_topic: String,
     restart_button_availability_topic: String,
@@ -677,7 +677,7 @@ impl HandlesData for ContainerStatus {
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
         let inspect = cancellation_token
-            .wait_on(self.docker.inspect_container(
+            .wait_on(self.container_engine.inspect_container(
                 &self.container_name,
                 Some(InspectContainerOptionsBuilder::new().build()),
             ))
@@ -727,7 +727,7 @@ impl HandlesData for ContainerStatus {
 struct ContainerStats {
     used_memory_state_topic: String,
     used_cpu_state_topic: String,
-    docker: Docker,
+    container_engine: ContainerEngine,
     container_name: String,
     last_cpu_stats: Arc<RwLock<Option<ContainerCpuStats>>>,
 }
@@ -782,7 +782,7 @@ impl HandlesData for ContainerStats {
         cancellation_token: CancellationToken,
     ) -> crate::devices::Result<HashMap<String, String>> {
         let inspect = cancellation_token
-            .wait_on(self.docker.inspect_container(
+            .wait_on(self.container_engine.inspect_container(
                 &self.container_name,
                 Some(InspectContainerOptionsBuilder::new().build()),
             ))
@@ -797,7 +797,7 @@ impl HandlesData for ContainerStats {
         }
         let stats = cancellation_token
             .wait_on(
-                self.docker
+                self.container_engine
                     .stats(
                         &self.container_name,
                         Some(StatsOptionsBuilder::new().stream(false).one_shot(true).build()),
@@ -821,7 +821,7 @@ impl HandlesData for ContainerStats {
 #[derive(Debug)]
 struct RestartButton {
     command_topic: String,
-    docker: Docker,
+    container_engine: ContainerEngine,
     container_name: String,
 }
 #[async_trait]
@@ -837,7 +837,7 @@ impl HandlesData for RestartButton {
     ) -> crate::devices::Result<CommandResult> {
         trace!("RestartButton received event for topic {topic}");
         cancellation_token
-            .wait_on(self.docker.restart_container(
+            .wait_on(self.container_engine.restart_container(
                 &self.container_name,
                 Some(RestartContainerOptionsBuilder::new().t(5).build()),
             ))
@@ -852,7 +852,7 @@ impl HandlesData for RestartButton {
 #[derive(Debug)]
 struct StartButton {
     command_topic: String,
-    docker: Docker,
+    container_engine: ContainerEngine,
     container_name: String,
 }
 #[async_trait]
@@ -869,7 +869,7 @@ impl HandlesData for StartButton {
         trace!("StartButton received event for topic {topic}");
         cancellation_token
             .wait_on(
-                self.docker
+                self.container_engine
                     .start_container(&self.container_name, Some(StartContainerOptionsBuilder::new().build())),
             )
             .await??;
@@ -883,7 +883,7 @@ impl HandlesData for StartButton {
 #[derive(Debug)]
 struct StopButton {
     command_topic: String,
-    docker: Docker,
+    container_engine: ContainerEngine,
     container_name: String,
 }
 #[async_trait]
@@ -899,7 +899,7 @@ impl HandlesData for StopButton {
     ) -> crate::devices::Result<CommandResult> {
         trace!("StopButton received event for topic {topic}");
         cancellation_token
-            .wait_on(self.docker.stop_container(
+            .wait_on(self.container_engine.stop_container(
                 &self.container_name,
                 Some(StopContainerOptionsBuilder::new().t(5).build()),
             ))
@@ -914,7 +914,7 @@ impl HandlesData for StopButton {
 #[derive(Debug)]
 struct RemoveButton {
     command_topic: String,
-    docker: Docker,
+    container_engine: ContainerEngine,
     container_name: String,
 }
 #[async_trait]
@@ -930,14 +930,14 @@ impl HandlesData for RemoveButton {
     ) -> crate::devices::Result<CommandResult> {
         trace!("RemoveButton received event for topic {topic}");
         cancellation_token
-            .wait_on(self.docker.stop_container(
+            .wait_on(self.container_engine.stop_container(
                 &self.container_name,
                 Some(StopContainerOptionsBuilder::new().t(5).build()),
             ))
             .await??;
         cancellation_token
             .wait_on(
-                self.docker
+                self.container_engine
                     .remove_container(&self.container_name, Some(RemoveContainerOptionsBuilder::new().build())),
             )
             .await??;
@@ -962,7 +962,7 @@ impl HandlesData for ContainerStaticData {
 }
 
 #[cfg(test)]
-pub mod docker_client {
+pub mod container_engine_client {
     use bollard::{
         container::LogOutput,
         errors::Error,
@@ -978,7 +978,7 @@ pub mod docker_client {
 
     mockall::mock! {
         #[derive(Debug)]
-        pub Docker {
+        pub ContainerEngine {
             pub fn connect_with_socket_defaults() -> Result<Self, Error>;
             pub fn logs(&self, container_name: &str, options: Option<LogsOptions>) -> Pin<Box<dyn Stream<Item = Result<LogOutput, Error>> + Send + 'static>>;
             pub async fn list_containers(&self, options: Option<ListContainersOptions>) -> Result<Vec<ContainerSummary>, Error>;
@@ -993,12 +993,12 @@ pub mod docker_client {
             pub async fn list_networks( &self, options: Option<ListNetworksOptions>) -> Result<Vec<Network>, Error>;
         }
 
-        impl Clone for Docker {
+        impl Clone for ContainerEngine {
             fn clone(&self) -> Self;
         }
     }
 
-    pub use MockDocker as Docker;
+    pub use MockContainerEngine as ContainerEngine;
 }
 
 #[cfg(test)]
@@ -1012,16 +1012,16 @@ mod tests {
             ContainerSummaryStateEnum, HealthStatusEnum,
         },
     };
-    use docker_client::MockDocker;
+    use container_engine_client::MockContainerEngine;
     use futures::stream;
     use pretty_assertions::assert_eq;
     use serial_test::serial;
 
     #[tokio::test]
     async fn test_log_text_get_entity_data_success() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_logs().returning(|_, _| {
+        mock_container_engine.expect_logs().returning(|_, _| {
             Box::pin(stream::iter(vec![
                 Ok(LogOutput::StdOut {
                     message: "2024-10-31 10:00:00 Starting container".into(),
@@ -1037,7 +1037,7 @@ mod tests {
 
         let log_text = LogText {
             state_topic: "test_container/log/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             should_get_logs: Arc::new(AtomicBool::new(true)),
         };
@@ -1055,15 +1055,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_text_get_entity_data_empty_logs() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker
+        mock_container_engine
             .expect_logs()
             .returning(|_, _| Box::pin(stream::iter(vec![])));
 
         let log_text = LogText {
             state_topic: "test_container/log/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             should_get_logs: Arc::new(AtomicBool::new(true)),
         };
@@ -1077,15 +1077,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_text_get_entity_data_no_logs_when_shouldnt_get_logs() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker
+        mock_container_engine
             .expect_logs()
             .returning(|_, _| Box::pin(stream::iter(vec![])));
 
         let log_text = LogText {
             state_topic: "test_container/log/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             should_get_logs: Arc::new(AtomicBool::new(false)),
         };
@@ -1097,9 +1097,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_container_stats_get_entity_data_success_for_memory_cpu_empty() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_stats().returning(|_, _| {
+        mock_container_engine.expect_stats().returning(|_, _| {
             let stats = ContainerStatsResponse {
                 memory_stats: Some(ContainerMemoryStats {
                     usage: Some(1_073_741_824),
@@ -1118,7 +1118,7 @@ mod tests {
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
-        mock_docker.expect_inspect_container().returning(|_, _| {
+        mock_container_engine.expect_inspect_container().returning(|_, _| {
             let inspect = ContainerInspectResponse {
                 state: Some(bollard::models::ContainerState {
                     running: Some(true),
@@ -1132,7 +1132,7 @@ mod tests {
         let container_stats = ContainerStats {
             used_memory_state_topic: "test_container/used_memory/state".to_string(),
             used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             last_cpu_stats: Arc::new(RwLock::new(None)),
         };
@@ -1153,9 +1153,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_container_stats_get_entity_data_success_for_memory_and_cpu() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_stats().returning(|_, _| {
+        mock_container_engine.expect_stats().returning(|_, _| {
             let stats = ContainerStatsResponse {
                 memory_stats: Some(ContainerMemoryStats {
                     usage: Some(1_073_741_824),
@@ -1174,7 +1174,7 @@ mod tests {
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
-        mock_docker.expect_inspect_container().returning(|_, _| {
+        mock_container_engine.expect_inspect_container().returning(|_, _| {
             let inspect = ContainerInspectResponse {
                 state: Some(bollard::models::ContainerState {
                     running: Some(true),
@@ -1188,7 +1188,7 @@ mod tests {
         let container_stats = ContainerStats {
             used_memory_state_topic: "test_container/used_memory/state".to_string(),
             used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             last_cpu_stats: Arc::new(RwLock::new(Some(ContainerCpuStats {
                 cpu_usage: Some(ContainerCpuUsage {
@@ -1216,12 +1216,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_container_stats_get_entity_data_no_stats() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker
+        mock_container_engine
             .expect_stats()
             .returning(|_, _| Box::pin(stream::iter(vec![])));
-        mock_docker.expect_inspect_container().returning(|_, _| {
+        mock_container_engine.expect_inspect_container().returning(|_, _| {
             let inspect = ContainerInspectResponse {
                 state: Some(bollard::models::ContainerState {
                     running: Some(true),
@@ -1235,7 +1235,7 @@ mod tests {
         let container_stats = ContainerStats {
             used_memory_state_topic: "test_container/used_memory/state".to_string(),
             used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             last_cpu_stats: Arc::new(RwLock::new(None)),
         };
@@ -1249,16 +1249,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_container_stats_get_entity_data_no_memory_stats() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_stats().returning(|_, _| {
+        mock_container_engine.expect_stats().returning(|_, _| {
             let stats = ContainerStatsResponse {
                 memory_stats: None,
                 ..ContainerStatsResponse::default()
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
-        mock_docker.expect_inspect_container().returning(|_, _| {
+        mock_container_engine.expect_inspect_container().returning(|_, _| {
             let inspect = ContainerInspectResponse {
                 state: Some(bollard::models::ContainerState {
                     running: Some(true),
@@ -1272,7 +1272,7 @@ mod tests {
         let container_stats = ContainerStats {
             used_memory_state_topic: "test_container/used_memory/state".to_string(),
             used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             last_cpu_stats: Arc::new(RwLock::new(None)),
         };
@@ -1286,9 +1286,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_container_stats_get_entity_data_no_usage() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_stats().returning(|_, _| {
+        mock_container_engine.expect_stats().returning(|_, _| {
             let stats = ContainerStatsResponse {
                 memory_stats: Some(ContainerMemoryStats {
                     usage: None,
@@ -1298,7 +1298,7 @@ mod tests {
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
-        mock_docker.expect_inspect_container().returning(|_, _| {
+        mock_container_engine.expect_inspect_container().returning(|_, _| {
             let inspect = ContainerInspectResponse {
                 state: Some(bollard::models::ContainerState {
                     running: Some(true),
@@ -1312,7 +1312,7 @@ mod tests {
         let container_stats = ContainerStats {
             used_memory_state_topic: "test_container/used_memory/state".to_string(),
             used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             last_cpu_stats: Arc::new(RwLock::new(None)),
         };
@@ -1326,9 +1326,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_container_stats_get_entity_data_zero_usage() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_stats().returning(|_, _| {
+        mock_container_engine.expect_stats().returning(|_, _| {
             let stats = ContainerStatsResponse {
                 memory_stats: Some(ContainerMemoryStats {
                     usage: Some(0),
@@ -1347,7 +1347,7 @@ mod tests {
             };
             Box::pin(stream::iter(vec![Ok(stats)]))
         });
-        mock_docker.expect_inspect_container().returning(|_, _| {
+        mock_container_engine.expect_inspect_container().returning(|_, _| {
             let inspect = ContainerInspectResponse {
                 state: Some(bollard::models::ContainerState {
                     running: Some(true),
@@ -1361,7 +1361,7 @@ mod tests {
         let container_stats = ContainerStats {
             used_memory_state_topic: "test_container/used_memory/state".to_string(),
             used_cpu_state_topic: "test_container/used_cpu/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             last_cpu_stats: Arc::new(RwLock::new(None)),
         };
@@ -1379,10 +1379,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_removed_devices() {
-        let c = MockDocker::connect_with_socket_defaults_context();
+        let c = MockContainerEngine::connect_with_socket_defaults_context();
         c.expect().return_once(|| {
-            let mut docker = MockDocker::default();
-            docker
+            let mut container_engine = MockContainerEngine::default();
+            container_engine
                 .expect_list_containers()
                 .returning(move |_| {
                     Ok(vec![ContainerSummary {
@@ -1391,7 +1391,7 @@ mod tests {
                     }])
                 })
                 .times(1);
-            Ok(docker)
+            Ok(container_engine)
         });
         let provider_name = "My Machine";
         let host_identifier = slugify(provider_name);
@@ -1405,9 +1405,9 @@ mod tests {
                     via_device: None,
                 },
                 DeviceOrigin {
-                    name: "docker-status-mqtt".to_string(),
+                    name: "cmha".to_string(),
                     sw: env!("CARGO_PKG_VERSION").to_string(),
-                    url: "https://github.com/giggio/docker-status-mqtt".to_string(),
+                    url: "https://codeberg.org/giggio/container_mqtt_home_assistant".to_string(),
                 },
                 "availability/topic".to_string(),
                 vec![Box::new(Sensor::new_simple(
@@ -1416,7 +1416,7 @@ mod tests {
                     "mdi:truck-cargo-container",
                 ))],
                 vec![],
-                "docker_device_provider".to_string(),
+                "container_engine_device_provider".to_string(),
                 CancellationToken::default(),
             )
             .with_metadata(vec![Box::new(HOST_DEVICE_METADATA.to_string())]),
@@ -1429,7 +1429,7 @@ mod tests {
                     via_device: None,
                 },
                 DeviceOrigin {
-                    name: "docker-status-mqtt".to_string(),
+                    name: "cmha".to_string(),
                     sw: env!("CARGO_PKG_VERSION").to_string(),
                     url: "x".to_string(),
                 },
@@ -1440,11 +1440,11 @@ mod tests {
                     "mdi:script-text-outline".to_string(),
                 ))],
                 vec![],
-                "docker_device_provider".to_string(),
+                "container_engine_device_provider".to_string(),
                 CancellationToken::default(),
             ),
         ]);
-        let device_provider = DockerDeviceProvider::new(provider_name).unwrap();
+        let device_provider = ContainerDeviceProvider::new(provider_name).unwrap();
         let removed = device_provider
             .remove_missing_devices(&existing_devices, CancellationToken::default())
             .await
@@ -1454,9 +1454,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_disk_free_get_entity_data_success() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_df().returning(|_| {
+        mock_container_engine.expect_df().returning(|_| {
             Ok(SystemDataUsageResponse {
                 images: Some(vec![
                     bollard::models::ImageSummary {
@@ -1515,7 +1515,7 @@ mod tests {
         });
 
         let disk_free = DiskFree {
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             images_state_topic: "images/state".to_string(),
             images_attributes_state_topic: "images/attributes".to_string(),
             volumes_state_topic: "volumes/state".to_string(),
@@ -1557,14 +1557,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_disk_free_get_entity_data_empty() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker
+        mock_container_engine
             .expect_df()
             .returning(|_| Ok(SystemDataUsageResponse::default()));
 
         let disk_free = DiskFree {
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             images_state_topic: "images/state".to_string(),
             images_attributes_state_topic: "images/attributes".to_string(),
             volumes_state_topic: "volumes/state".to_string(),
@@ -1582,9 +1582,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_container_status_get_entity_data_running() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_inspect_container().returning(|_, _| {
+        mock_container_engine.expect_inspect_container().returning(|_, _| {
             Ok(ContainerInspectResponse {
                 state: Some(bollard::models::ContainerState {
                     running: Some(true),
@@ -1601,7 +1601,7 @@ mod tests {
 
         let container_status = ContainerStatus {
             state_topic: "status/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             start_button_availability_topic: "start/avail".to_string(),
             restart_button_availability_topic: "restart/avail".to_string(),
@@ -1623,9 +1623,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_container_status_get_entity_data_stopped() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_inspect_container().returning(|_, _| {
+        mock_container_engine.expect_inspect_container().returning(|_, _| {
             Ok(ContainerInspectResponse {
                 state: Some(bollard::models::ContainerState {
                     running: Some(false),
@@ -1638,7 +1638,7 @@ mod tests {
 
         let container_status = ContainerStatus {
             state_topic: "status/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
             start_button_availability_topic: "start/avail".to_string(),
             restart_button_availability_topic: "restart/avail".to_string(),
@@ -1660,9 +1660,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_info_get_entity_data_success() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_list_networks().returning(|_| {
+        mock_container_engine.expect_list_networks().returning(|_| {
             Ok(vec![
                 bollard::models::Network {
                     name: Some("bridge".to_string()),
@@ -1678,7 +1678,7 @@ mod tests {
         let network_info = NetworkInfo {
             state_topic: "network/state".to_string(),
             state_attributes_topic: "network/attributes".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
         };
 
         let data = network_info
@@ -1696,9 +1696,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_host_version_get_entity_data_success() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_info().returning(|| {
+        mock_container_engine.expect_info().returning(|| {
             Ok(SystemInfo {
                 server_version: Some("20.10.7".to_string()),
                 ..Default::default()
@@ -1707,7 +1707,7 @@ mod tests {
 
         let host_version = HostVersion {
             state_topic: "version/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
         };
 
         let data = host_version
@@ -1720,16 +1720,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_restart_button_handle_command() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker
+        mock_container_engine
             .expect_restart_container()
             .with(mockall::predicate::eq("test_container"), mockall::predicate::always())
             .returning(|_, _| Ok(()));
 
         let mut restart_button = RestartButton {
             command_topic: "restart/command".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
         };
 
@@ -1743,16 +1743,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_button_handle_command() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker
+        mock_container_engine
             .expect_start_container()
             .with(mockall::predicate::eq("test_container"), mockall::predicate::always())
             .returning(|_, _| Ok(()));
 
         let mut start_button = StartButton {
             command_topic: "start/command".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
         };
 
@@ -1766,16 +1766,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_button_handle_command() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker
+        mock_container_engine
             .expect_stop_container()
             .with(mockall::predicate::eq("test_container"), mockall::predicate::always())
             .returning(|_, _| Ok(()));
 
         let mut stop_button = StopButton {
             command_topic: "stop/command".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
         };
 
@@ -1789,21 +1789,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_button_handle_command() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker
+        mock_container_engine
             .expect_stop_container()
             .with(mockall::predicate::eq("test_container"), mockall::predicate::always())
             .returning(|_, _| Ok(()));
 
-        mock_docker
+        mock_container_engine
             .expect_remove_container()
             .with(mockall::predicate::eq("test_container"), mockall::predicate::always())
             .returning(|_, _| Ok(()));
 
         let mut remove_button = RemoveButton {
             command_topic: "remove/command".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
             container_name: "test_container".to_string(),
         };
 
@@ -1834,14 +1834,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_info_get_entity_data_empty() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_list_networks().returning(|_| Ok(vec![]));
+        mock_container_engine.expect_list_networks().returning(|_| Ok(vec![]));
 
         let network_info = NetworkInfo {
             state_topic: "network/state".to_string(),
             state_attributes_topic: "network/attributes".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
         };
 
         let data = network_info
@@ -1857,9 +1857,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_host_version_get_entity_data_missing_version() {
-        let mut mock_docker = MockDocker::new();
+        let mut mock_container_engine = MockContainerEngine::new();
 
-        mock_docker.expect_info().returning(|| {
+        mock_container_engine.expect_info().returning(|| {
             Ok(SystemInfo {
                 server_version: None,
                 ..Default::default()
@@ -1868,7 +1868,7 @@ mod tests {
 
         let host_version = HostVersion {
             state_topic: "version/state".to_string(),
-            docker: mock_docker,
+            container_engine: mock_container_engine,
         };
 
         let data = host_version
@@ -1911,7 +1911,7 @@ mod tests {
     async fn test_restart_button_get_command_topics() {
         let restart_button = RestartButton {
             command_topic: "restart/command".to_string(),
-            docker: MockDocker::new(),
+            container_engine: MockContainerEngine::new(),
             container_name: "test".to_string(),
         };
 
@@ -1924,7 +1924,7 @@ mod tests {
     async fn test_start_button_get_command_topics() {
         let start_button = StartButton {
             command_topic: "start/command".to_string(),
-            docker: MockDocker::new(),
+            container_engine: MockContainerEngine::new(),
             container_name: "test".to_string(),
         };
 
@@ -1937,7 +1937,7 @@ mod tests {
     async fn test_stop_button_get_command_topics() {
         let stop_button = StopButton {
             command_topic: "stop/command".to_string(),
-            docker: MockDocker::new(),
+            container_engine: MockContainerEngine::new(),
             container_name: "test".to_string(),
         };
 
@@ -1950,7 +1950,7 @@ mod tests {
     async fn test_remove_button_get_command_topics() {
         let remove_button = RemoveButton {
             command_topic: "remove/command".to_string(),
-            docker: MockDocker::new(),
+            container_engine: MockContainerEngine::new(),
             container_name: "test".to_string(),
         };
 

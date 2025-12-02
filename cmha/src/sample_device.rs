@@ -63,9 +63,9 @@ impl DeviceProvider for SampleDeviceProvider {
                 via_device: None,
             },
             DeviceOrigin {
-                name: "docker-status-mqtt".to_string(),
+                name: "cmha".to_string(),
                 sw: env!("CARGO_PKG_VERSION").to_string(),
-                url: "https://github.com/giggio/docker-status-mqtt".to_string(),
+                url: "https://codeberg.org/giggio/container_mqtt_home_assistant".to_string(),
             },
             availability_topic.clone(),
             self.id(),
@@ -180,9 +180,9 @@ impl DeviceProvider for SampleDeviceProvider {
                 via_device: Some(main_device.details.identifier.clone()),
             },
             DeviceOrigin {
-                name: "docker-status-mqtt".to_string(),
+                name: "cmha".to_string(),
                 sw: env!("CARGO_PKG_VERSION").to_string(),
-                url: "https://github.com/giggio/docker-status-mqtt".to_string(),
+                url: "https://codeberg.org/giggio/container_mqtt_home_assistant".to_string(),
             },
             availability_topic,
             self.id(),
@@ -605,9 +605,9 @@ mod tests {
                 "sw_version": env!("CARGO_PKG_VERSION"),
             },
             "origin": {
-                "name": "docker-status-mqtt",
+                "name": "cmha",
                 "sw": env!("CARGO_PKG_VERSION"),
-                "url": "https://github.com/giggio/docker-status-mqtt",
+                "url": "https://codeberg.org/giggio/container_mqtt_home_assistant",
             },
             "availability": [{ "topic": "device_manager_id/availability" }],
             "components": {
@@ -703,9 +703,9 @@ mod tests {
                 "via_device": "test_device",
             },
             "origin": {
-                "name": "docker-status-mqtt",
+                "name": "cmha",
                 "sw": env!("CARGO_PKG_VERSION"),
-                "url": "https://github.com/giggio/docker-status-mqtt",
+                "url": "https://codeberg.org/giggio/container_mqtt_home_assistant",
             },
             "availability": [{ "topic": "device_manager_id/availability" }],
             "components": {

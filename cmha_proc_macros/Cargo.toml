@@ -1,5 +1,5 @@
 [package]
-name = "docker_status_mqtt_proc_macros"
+name = "cmha_proc_macros"
 version = "0.1.0"
 edition = "2024"
 

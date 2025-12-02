@@ -1,5 +1,5 @@
 {
-  description = "Docker Status MQTT";
+  description = "Container Status MQTT Home Assistant";
 
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";

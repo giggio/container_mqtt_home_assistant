@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use docker_status_mqtt_proc_macros::EntityDetailsGetter;
+use cmha_proc_macros::EntityDetailsGetter;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::fmt::Debug;

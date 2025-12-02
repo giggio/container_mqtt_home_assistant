@@ -12,14 +12,13 @@ extern crate log;
 use std::sync::Arc;
 
 use clap::Parser;
-extern crate docker_status_mqtt_proc_macros;
+extern crate cmha_proc_macros;
 #[macro_use]
 mod macros;
 mod args;
 mod cancellation_token;
 mod device_manager;
 mod devices;
-mod docker;
 mod helpers;
 mod logger;
 #[cfg(debug_assertions)]
@@ -33,9 +32,9 @@ use crate::{
     cancellation_token::CancellationTokenSource,
     device_manager::{DeviceManager, Error},
     devices::{DeviceProvider, Devices},
-    docker_device::DockerDeviceProvider,
+    container_device::ContainerDeviceProvider,
 };
-mod docker_device;
+mod container_device;
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
@@ -67,8 +66,8 @@ async fn run(cli: Cli) -> Result<()> {
                     device_providers.push(Box::new(SampleDeviceProvider::new(device_name)));
                 }
             } else {
-                trace!("Adding Docker device provider with name: {device_name}");
-                device_providers.push(Box::new(DockerDeviceProvider::new(device_name)?));
+                trace!("Adding Container device provider with name: {device_name}");
+                device_providers.push(Box::new(ContainerDeviceProvider::new(device_name)?));
             }
             let device_providers_arc = Arc::new(device_providers);
             let (mut device_manager, eventloop, rx) = DeviceManager::new(
@@ -138,7 +137,7 @@ pub enum AppError {
     #[error(transparent)]
     Devices(#[from] devices::Error),
     #[error(transparent)]
-    DockerDevice(#[from] docker_device::Error),
+    ContainerDevice(#[from] container_device::Error),
 }
 
 #[cfg(test)]

@@ -430,6 +430,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmha"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "bitflags",
+ "bollard",
+ "chrono",
+ "chrono-humanize",
+ "clap",
+ "cmha_proc_macros",
+ "const_format",
+ "ctor",
+ "enum_dispatch",
+ "flexi_logger",
+ "foldhash",
+ "futures",
+ "hashbrown 0.16.0",
+ "log",
+ "mockall",
+ "mockall_double",
+ "pretty_assertions",
+ "rand 0.9.2",
+ "rumqttc",
+ "rust_decimal",
+ "rustix",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "slug",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
+name = "cmha_proc_macros"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn 2.0.110",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -551,52 +597,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97369cbbc041bc366949bc74d34658d6cda5621039731c6310521892a3a20ae0"
 dependencies = [
  "proc-macro2",
- "quote",
- "syn 2.0.110",
-]
-
-[[package]]
-name = "docker_status_mqtt"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "async-trait",
- "bitflags",
- "bollard",
- "chrono",
- "chrono-humanize",
- "clap",
- "const_format",
- "ctor",
- "docker_status_mqtt_proc_macros",
- "enum_dispatch",
- "flexi_logger",
- "foldhash",
- "futures",
- "hashbrown 0.16.0",
- "log",
- "mockall",
- "mockall_double",
- "pretty_assertions",
- "rand 0.9.2",
- "rumqttc",
- "rust_decimal",
- "rustix",
- "rustls",
- "rustls-platform-verifier",
- "serde",
- "serde_json",
- "serial_test",
- "slug",
- "thiserror 2.0.17",
- "tokio",
- "tokio-rustls",
-]
-
-[[package]]
-name = "docker_status_mqtt_proc_macros"
-version = "0.1.0"
-dependencies = [
  "quote",
  "syn 2.0.110",
 ]
