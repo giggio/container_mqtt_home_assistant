@@ -30,10 +30,10 @@
       {
         packages = {
           x86_64-gnu = buildForTarget { target = "x86_64-unknown-linux-gnu"; }; # this will link to nix libraries and wont work in any other Linux system
-          x86_64 = buildForTarget { target = "x86_64-unknown-linux-musl"; };
+          x86_64 = buildForTarget { target = "x86_64-unknown-linux-musl"; binary_suffix = "x86_64"; };
           x86_64_test = buildForTarget { target = "x86_64-unknown-linux-musl"; mode = "test"; };
           x86_64_clippy = buildForTarget { target = "x86_64-unknown-linux-musl"; mode = "clippy"; };
-          aarch64 = buildForTarget { target = "aarch64-unknown-linux-musl"; };
+          aarch64 = buildForTarget { target = "aarch64-unknown-linux-musl"; binary_suffix = "aarch64"; };
           default = pkgs.runCommand "cmha-all-outputs" # builds outputs to be used by conteiner images only, statically linked
             {
               buildInputs = [

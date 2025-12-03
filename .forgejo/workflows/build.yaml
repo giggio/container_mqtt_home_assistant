@@ -23,11 +23,13 @@ jobs:
   build:
     name: cargo build
     runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install Nix
         uses: https://github.com/DeterminateSystems/nix-installer-action.git@main
-      - name: Set USER for Cachix
+      - name: Set user for Cachix
         run: echo "USER=root" >> $GITHUB_ENV
       - name: Set up cache
         uses: https://github.com/cachix/cachix-action.git@v15
@@ -36,3 +38,12 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build and test
         run: nix build --print-build-logs
+      - name: Login to Docker Hub
+        if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/')
+        uses: https://github.com/docker/login-action.git@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/')
+        run: make

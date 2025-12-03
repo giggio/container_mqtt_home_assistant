@@ -1,9 +1,11 @@
-.PHONY: default build test clean run build_release build_amd64_static docker_build_amd64_static release_amd64_static build_arm64_static docker_build_arm64_static release_arm64_static release_with_docker_only release
+.PHONY: default build test clean run build_release docker_build_amd64_static docker_build_arm64_static docker_build_all docker_build_multiarch release
 
 amd64_target := x86_64
 arm64_target := aarch64
 binary := cmha
 image_name := cmha
+version := $(shell yq -oy .package.version cmha/Cargo.toml)
+
 default: release
 
 build:
@@ -21,39 +23,32 @@ run:
 build_release:
 	cargo build --release
 
-build_amd64_static:
-	nix build .\#$(amd64_target)
-	mkdir -p target/tmp/$(amd64_target)/
-	cp -f result/bin/$(binary) target/tmp/$(amd64_target)/
+target/tmp/$(binary)_$(amd64_target):
+	nix build .\#$(amd64_target) --print-build-logs
+	mkdir -p target/tmp
+	cp -f result/bin/$(binary)_$(amd64_target) target/tmp/
 
-docker_build_amd64_static:
-	mkdir -p target/output
-	cp -f target/tmp/$(amd64_target)/$(binary) target/output/
-	VERSION=$$(yq -oy .package.version cmha/Cargo.toml); \
-	docker buildx build -f Containerfile -t giggio/$(image_name):$$VERSION-amd64 -t giggio/$(image_name):amd64 --platform linux/amd64 --build-arg PLATFORM=x86_64 --push .
+target/tmp/$(binary)_$(arm64_target):
+	nix build .\#$(arm64_target) --print-build-logs
+	mkdir -p target/tmp
+	cp -f result/bin/$(binary)_$(arm64_target) target/tmp/
 
-release_amd64_static: build_amd64_static docker_build_amd64_static
+docker_build_amd64_static: target/tmp/$(binary)_$(amd64_target)
+	docker buildx build -f Containerfile --build-arg target_file=target/tmp/$(binary)_$(amd64_target) \
+		-t giggio/$(image_name):$(version)-amd64 -t giggio/$(image_name):amd64 --platform linux/amd64 --build-arg PLATFORM=x86_64 --push .
 
-build_arm64_static:
-	nix build .\#$(arm64_target)
-	mkdir -p target/tmp/$(arm64_target)/
-	cp -f result/bin/$(binary) target/tmp/$(arm64_target)/
+docker_build_arm64_static: target/tmp/$(binary)_$(arm64_target)
+	docker buildx build -f Containerfile --build-arg target_file=target/tmp/$(binary)_$(arm64_target) \
+		-t giggio/$(image_name):$(version)-arm64 -t giggio/$(image_name):arm64 --platform linux/arm64 --build-arg PLATFORM=aarch64 --push .
 
-docker_build_arm64_static:
-	mkdir -p target/output
-	cp -f target/tmp/$(arm64_target)/$(binary) target/output/
-	VERSION=$$(yq -oy .package.version cmha/Cargo.toml); \
-	docker buildx build -f Containerfile -t giggio/$(image_name):$$VERSION-arm64 -t giggio/$(image_name):arm64 --platform linux/arm64 --build-arg PLATFORM=aarch64 --push .
+docker_build_all: docker_build_amd64_static docker_build_arm64_static
 
-release_arm64_static: build_arm64_static docker_build_arm64_static
-
-release_with_docker_only:
+docker_build_multiarch:
 	docker buildx imagetools create -t giggio/$(image_name):latest \
 		giggio/$(image_name):amd64 \
-		giggio/$(image_name):arm64; \
-	VERSION=$$(yq -oy .package.version cmha/Cargo.toml); \
-    docker buildx imagetools create -t giggio/$(image_name):$$VERSION \
-		giggio/$(image_name):$$VERSION-amd64 \
-		giggio/$(image_name):$$VERSION-arm64;
+		giggio/$(image_name):arm64
+	docker buildx imagetools create -t giggio/$(image_name):$(version) \
+		giggio/$(image_name):$(version)-amd64 \
+		giggio/$(image_name):$(version)-arm64
 
-release: release_amd64_static release_arm64_static release_with_docker_only
+release: docker_build_all docker_build_multiarch

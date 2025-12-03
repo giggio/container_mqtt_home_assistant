@@ -1,5 +1,5 @@
 { nixpkgs, lib, system, fenix, naersk, ... }:
-{ target, mode ? "build" }:
+{ target, mode ? "build", binary_suffix ? "" }:
 let
   crossPkgs = ((import nixpkgs) {
     inherit system;
@@ -35,4 +35,7 @@ naersk'.buildPackage {
   "CARGO_TARGET_${rustTargetPlatformUpper}_LINKER" = "${targetCc}";
   depsBuildBuild = [ crossPkgs.stdenv.cc ];
   inherit mode;
+  postInstall = if binary_suffix != "" then ''
+    ln -s $out/bin/cmha $out/bin/cmha_${binary_suffix}
+  '' else "";
 }
