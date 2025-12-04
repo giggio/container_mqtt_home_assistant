@@ -50,8 +50,6 @@ impl TimedUpdateEventProvider {
                     trace!(category = "timed_update_event_provider"; "In the loop for publishing sensor data, cancellation requested, breaking...");
                     break;
                 }
-                trace!(category = "timed_update_event_provider"; "In the loop for publishing sensor data, interval ticked...");
-                info!(category = "timed_update_event_provider"; "Publishing sensor data...");
                 match get_events_from_devices(devices, cancellation_token.clone(), last_messages.clone()).await {
                     Ok(events) => {
                         trace!(category = "timed_update_event_provider"; "Got sensor data, sending data...");
@@ -172,9 +170,9 @@ async fn get_events_from_devices(
     last_messages: Arc<Mutex<HashMap<String, String>>>,
 ) -> Result<HashMap<String, String>> {
     Ok(devices.devices_vec().await.into_iter().async_map(async |device_arc| {
-            info!(category = "timed_update_event_provider"; "Publishing sensor data...");
+            trace!(category = "timed_update_event_provider"; "Publishing sensor data...");
             let device = cancellation_token.wait_on(device_arc.read()).await?;
-            trace!(category = "timed_update_event_provider"; "Getting entities data for device: {}", device.details.name);
+            debug!(category = "timed_update_event_provider"; "Getting entities data for device: {}", device.details.name);
             let data = device.get_entities_data().await?;
             trace!(category = "timed_update_event_provider"; "Got entities data for device: {}: {data:?}", device.details.name);
             Ok(data)

@@ -275,7 +275,7 @@ impl DeviceManager {
                     entity_data.0, entity_data.1
                 );
             } else if log_enabled!(log::Level::Info) {
-                info!("Publishing sensor data to topic: {}", entity_data.0);
+                debug!("Publishing sensor data to topic: {}", entity_data.0);
             }
             self.publish_to_client(entity_data.0, entity_data.1).await?;
             trace!("Published sensor data to topic");
