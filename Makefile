@@ -5,6 +5,7 @@ arm64_target := aarch64
 binary := cmha
 image_name := cmha
 version := $(shell yq -oy .package.version cmha/Cargo.toml)
+rust_deps := $(shell git ls-files --cached --modified --others --exclude-standard '*.rs' ':**/Cargo.toml' ':**/Cargo.lock')
 
 default: release
 
@@ -23,12 +24,12 @@ run:
 build_release:
 	cargo build --release
 
-target/tmp/$(binary)_$(amd64_target):
+target/tmp/$(binary)_$(amd64_target): $(rust_deps)
 	nix build .\#$(amd64_target) --print-build-logs
 	mkdir -p target/tmp
 	cp -f result/bin/$(binary)_$(amd64_target) target/tmp/
 
-target/tmp/$(binary)_$(arm64_target):
+target/tmp/$(binary)_$(arm64_target): $(rust_deps)
 	nix build .\#$(arm64_target) --print-build-logs
 	mkdir -p target/tmp
 	cp -f result/bin/$(binary)_$(arm64_target) target/tmp/
