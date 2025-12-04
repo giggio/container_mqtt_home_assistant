@@ -1,5 +1,9 @@
 # Container Status MQTT Home Assistant
 
+![Build status](https://codeberg.org/giggio/container_mqtt_home_assistant/badges/workflows/build.yaml/badge.svg)
+
+Main repo: [codeberg.org/giggio/container_mqtt_home_assistant](https://codeberg.org/giggio/container_mqtt_home_assistant)
+
 This app will report the status of all your containers to MQTT.
 
 It is designed to work with the protocols of Home Assistant's MQTT integration.
