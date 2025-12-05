@@ -10,13 +10,66 @@ It is designed to work with the protocols of Home Assistant's MQTT integration.
 
 ## Quick Start
 
-TBD
+Run it as a container in the Docker host, like so
 
-````bash
-docker run --rm -ti ...
-````
+```bash
+docker run giggio/cmha run --host=<mqtt_host> --port=<mqtt_port> --username=<mqtt_user> --password=<mqtt_password> --device-name='<device name>'
+```
+
+It is also possible to use environment variables to specify the same options. To view all options, run:
+
+```bash
+docker run giggio/cmha run --help
+```
+
+The device name is used in Home Assistant to identify the Docker host, a new device will be created with its name and
+each container will show as connected through it.
+Communication to MQTT goes through https or http, with Docker though the default unix socket.
+
+Bellow is a compose configuration ([compose.yml](./compose.yml)) that will run the container in the Docker host and
+assumes that the MQTT broker is on the same host.
+
+```yaml
+services:
+  container_mqtt_ha:
+    image: giggio/cmha
+    container_name: container_mqtt_ha
+    environment:
+      MQTT_USERNAME: <mqtt_user>
+      MQTT_PASSWORD: <mqtt_password>
+      MQTT_HOST: host.docker.internal
+      # MQTT_PORT: 1883 # optional, defaults to 1883
+      MQTT_DEVICE_NAME: <device name>
+      # MQTT_DISABLE_TLS: true
+      # MQTT_PUBLISH_INTERVAL: 5000
+      # MQTT_DEVICE_MANAGER_ID: <device manager id>
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # only necessary if your MQTT broker is on the host
+    restart: always
+```
 
 ### Detailed commands
+
+TBD
+
+### Logging
+
+Logging is controlled by environment variable `RUST_LOG`, as is common with Rust applications. It can be set to error,
+warn, info, debug or trace. Setting it will enable logs for all libraries used by the application, so it might be better
+to prefix it with `cmha=`, e.g. `RUST_LOG=cmha=info`, to only get logs from this application. Setting it without prefix
+will show http communication logs and logs from communication with the docker host, among others.
+
+### Image tags
+
+There are tags for `amd64` and `arm64`, and also for each released versions, like `0.1.0`, which is a multiarchitecture
+image, and variants for each architecture, like `0.1.0-amd64`.
+
+The default is `latest`, and that is a multiarchitecture image too. Pull from `latest` and you will get the correct
+architecture and latest updates.
+
+### Healthcheck
 
 TBD
 

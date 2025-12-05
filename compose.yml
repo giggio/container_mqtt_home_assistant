@@ -1,0 +1,19 @@
+services:
+  container_mqtt_ha:
+    image: giggio/cmha
+    container_name: container_mqtt_ha
+    environment:
+      RUST_LOG: cmha=trace # optional
+      MQTT_USERNAME: mqtt_user
+      MQTT_PASSWORD: password
+      MQTT_HOST: host.docker.internal
+      MQTT_DEVICE_NAME: MQTT Test
+      # MQTT_PORT: 1883 # optional, defaults to 1883
+      MQTT_DISABLE_TLS: true # optional, should be avoided
+      # MQTT_PUBLISH_INTERVAL: 5000 # optional
+      # MQTT_DEVICE_MANAGER_ID: <device manager id> # optional
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # only necessary if your MQTT broker is on the host
+    restart: always
