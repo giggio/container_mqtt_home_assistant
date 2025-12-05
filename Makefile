@@ -1,5 +1,6 @@
 .PHONY: default build test clean run build_release docker_build_amd64_static docker_build_arm64_static docker_build_all docker_build_multiarch release
 
+NO_PUSH ?= 0
 amd64_target := x86_64
 arm64_target := aarch64
 binary := cmha
@@ -36,11 +37,11 @@ target/tmp/$(binary)_$(arm64_target): $(rust_deps)
 
 docker_build_amd64_static: target/tmp/$(binary)_$(amd64_target)
 	docker buildx build -f Containerfile --build-arg target_file=target/tmp/$(binary)_$(amd64_target) \
-		-t giggio/$(image_name):$(version)-amd64 -t giggio/$(image_name):amd64 --platform linux/amd64 --build-arg PLATFORM=x86_64 --push .
+		-t giggio/$(image_name):$(version)-amd64 -t giggio/$(image_name):amd64 --platform linux/amd64 --build-arg PLATFORM=x86_64 $(if $(NO_PUSH),, --push) .
 
 docker_build_arm64_static: target/tmp/$(binary)_$(arm64_target)
 	docker buildx build -f Containerfile --build-arg target_file=target/tmp/$(binary)_$(arm64_target) \
-		-t giggio/$(image_name):$(version)-arm64 -t giggio/$(image_name):arm64 --platform linux/arm64 --build-arg PLATFORM=aarch64 --push .
+		-t giggio/$(image_name):$(version)-arm64 -t giggio/$(image_name):arm64 --platform linux/arm64 --build-arg PLATFORM=aarch64 $(if $(NO_PUSH),, --push) .
 
 docker_build_all: docker_build_amd64_static docker_build_arm64_static
 
