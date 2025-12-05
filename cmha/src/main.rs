@@ -30,9 +30,9 @@ use crate::sample_device::SampleDeviceProvider;
 use crate::{
     args::{Cli, Commands},
     cancellation_token::CancellationTokenSource,
+    container_device::ContainerDeviceProvider,
     device_manager::{DeviceManager, Error},
     devices::{DeviceProvider, Devices},
-    container_device::ContainerDeviceProvider,
 };
 mod container_device;
 
@@ -100,14 +100,32 @@ async fn run(cli: Cli) -> Result<()> {
 }
 
 fn deal_with_ctrl_c(mut cancellation_token_source: CancellationTokenSource, mut device_manager: DeviceManager) {
+    use tokio::signal::unix::{SignalKind, signal};
     tokio::spawn(async move {
-        if let Err(err) = tokio::signal::ctrl_c().await {
-            eprintln!("Error listening for Ctrl-C signal: {err}");
-            std::process::exit(1);
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Err(err) => {
+                eprintln!("Error listening for SIGINT (Ctrl+C) signal: {err}");
+                std::process::exit(1);
+            }
+            Ok(sigint) => sigint,
+        };
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Err(err) => {
+                eprintln!("Error listening for SIGTERM signal: {err}");
+                std::process::exit(1);
+            }
+            Ok(sigterm) => sigterm,
+        };
+        tokio::select! {
+            _ = sigint.recv() => {
+                trace!("SIGINT (Ctrl+C) received, cancelling cancellation token source...");
+            }
+            _ = sigterm.recv() => {
+                trace!("SIGTERM received, cancelling cancellation token source...");
+            }
         }
-        trace!("Ctrl-C received, cancelling cancellation token source...");
         cancellation_token_source.cancel().await;
-        trace!("Ctrl-C received, stopping device manager...");
+        trace!("Termination request received, stopping device manager...");
         tokio::select! {
             stop_result = device_manager.stop() => {
                 if let Err(e) = stop_result {
