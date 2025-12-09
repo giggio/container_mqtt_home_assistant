@@ -40,6 +40,8 @@ pub enum Commands {
         #[arg(short = 'i', long, env = formatc!("{ENV_PREFIX}DEVICE_MANAGER_ID"), default_value_t=device_manager_id_fn(), value_parser=parse_slug, help = "Name of the Device Manager that identifies this instance to Home Assistant and group all devices (and, therefore, entities). If not provided, will use the hostname.")]
         device_manager_id: String,
     },
+    #[command(about = "Run the health check.", alias="healthcheck", long_about = None)]
+    HealthCheck {},
 }
 
 #[derive(Args, Debug, PartialEq)]
@@ -141,6 +143,7 @@ mod tests {
                 assert_eq!(mqtt_broker_info.password, "test_pass");
                 assert!(!mqtt_broker_info.disable_tls);
             }
+            Commands::HealthCheck { .. } => panic!("Unexpected command"),
         }
     }
 
@@ -162,6 +165,7 @@ mod tests {
                 assert_eq!(device_name, "My Custom Device".to_string());
                 assert!(sample_device);
             }
+            Commands::HealthCheck { .. } => panic!("Unexpected command"),
         }
     }
 
@@ -176,6 +180,7 @@ mod tests {
             Commands::Run { publish_interval, .. } => {
                 assert_eq!(publish_interval, Duration::from_millis(10000));
             }
+            Commands::HealthCheck { .. } => panic!("Unexpected command"),
         }
     }
 
@@ -190,6 +195,7 @@ mod tests {
             Commands::Run { device_manager_id, .. } => {
                 assert_eq!(device_manager_id, "my_custom_device_manager");
             }
+            Commands::HealthCheck { .. } => panic!("Unexpected command"),
         }
     }
 
@@ -204,6 +210,7 @@ mod tests {
             Commands::Run { mqtt_broker_info, .. } => {
                 assert!(mqtt_broker_info.disable_tls);
             }
+            Commands::HealthCheck { .. } => panic!("Unexpected command"),
         }
     }
 
@@ -287,6 +294,7 @@ mod tests {
                         "Failed to slugify '{input}' to '{expected}'"
                     );
                 }
+                Commands::HealthCheck { .. } => panic!("Unexpected command"),
             }
         }
     }

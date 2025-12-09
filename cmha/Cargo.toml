@@ -35,6 +35,8 @@ rustix = { version = "1.1.2", features = ["system"] }
 async-stream = "0.3.6"
 rust_decimal = "1.39.0"
 bitflags = "2.10.0"
+raw_sync = "0.1.5"
+shared_memory = "0.12.4"
 
 [dev-dependencies]
 ctor = "0.6.0"

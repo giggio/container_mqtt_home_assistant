@@ -9,7 +9,7 @@
 #[macro_use]
 extern crate log;
 
-use std::sync::Arc;
+use std::{process, sync::Arc};
 
 use clap::Parser;
 extern crate cmha_proc_macros;
@@ -19,10 +19,12 @@ mod args;
 mod cancellation_token;
 mod device_manager;
 mod devices;
+mod healthcheck;
 mod helpers;
 mod logger;
 #[cfg(debug_assertions)]
 mod sample_device;
+mod shared_memory;
 mod update_engine;
 
 #[cfg(debug_assertions)]
@@ -33,6 +35,7 @@ use crate::{
     container_device::ContainerDeviceProvider,
     device_manager::{DeviceManager, Error},
     devices::{DeviceProvider, Devices},
+    healthcheck::HealthCheck,
 };
 mod container_device;
 
@@ -46,6 +49,8 @@ async fn main() -> std::result::Result<(), String> {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    // this will hold the shared memory in the main process until exit and will be used to check if the main process is healthy
+    let healthcheck = HealthCheck::new()?;
     match cli.command {
         Commands::Run {
             mqtt_broker_info,
@@ -80,7 +85,7 @@ async fn run(cli: Cli) -> Result<()> {
                 publish_interval,
             )?;
             let mut cancellation_token_source = CancellationTokenSource::new();
-            deal_with_ctrl_c(cancellation_token_source.clone(), device_manager.clone());
+            deal_with_stop_request(cancellation_token_source.clone(), device_manager.clone());
             let devices = Devices::from_device_providers(
                 device_providers_arc.clone(),
                 device_manager.availability_topic(),
@@ -91,6 +96,18 @@ async fn run(cli: Cli) -> Result<()> {
             info!("Configured, initiating connection and message exchange...");
             device_manager.deal_with_event_loop(eventloop).await?;
         }
+        Commands::HealthCheck { .. } => {
+            if healthcheck.check_if_healthy()? {
+                trace!("Health check passed");
+                if cli.verbose {
+                    println!("Health check passed");
+                }
+            } else {
+                trace!("Health check failed");
+                eprintln!("Health check failed");
+                process::exit(1);
+            }
+        }
     }
     if cli.verbose {
         info!("Shutting down...");
@@ -99,20 +116,20 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn deal_with_ctrl_c(mut cancellation_token_source: CancellationTokenSource, mut device_manager: DeviceManager) {
+fn deal_with_stop_request(mut cancellation_token_source: CancellationTokenSource, mut device_manager: DeviceManager) {
     use tokio::signal::unix::{SignalKind, signal};
     tokio::spawn(async move {
         let mut sigint = match signal(SignalKind::interrupt()) {
             Err(err) => {
                 eprintln!("Error listening for SIGINT (Ctrl+C) signal: {err}");
-                std::process::exit(1);
+                process::exit(1);
             }
             Ok(sigint) => sigint,
         };
         let mut sigterm = match signal(SignalKind::terminate()) {
             Err(err) => {
                 eprintln!("Error listening for SIGTERM signal: {err}");
-                std::process::exit(1);
+                process::exit(1);
             }
             Ok(sigterm) => sigterm,
         };
@@ -156,6 +173,10 @@ pub enum AppError {
     Devices(#[from] devices::Error),
     #[error(transparent)]
     ContainerDevice(#[from] container_device::Error),
+    #[error(transparent)]
+    SharedMemory(#[from] shared_memory::Error),
+    #[error(transparent)]
+    HealthCheck(#[from] healthcheck::Error),
 }
 
 #[cfg(test)]

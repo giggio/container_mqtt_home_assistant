@@ -31,6 +31,7 @@ use tokio_rustls::rustls::ClientConfig;
 use crate::{
     cancellation_token::{CancellationToken, CancellationTokenSource},
     devices::{DeviceProvider, Devices},
+    healthcheck::HealthCheck,
     helpers::*,
     update_engine::{UpdateEvent, create_event_producers},
 };
@@ -145,6 +146,7 @@ impl DeviceManager {
             CancellationTokenSource::new_with_a_token();
         let (event_loop_cancellation_token_source, event_loop_cancellation_token) =
             CancellationTokenSource::new_with_a_token();
+
         Ok((
             Self {
                 client,
@@ -196,7 +198,12 @@ impl DeviceManager {
         trace!("Waiting for message traffic and other tasks to stop...");
         loop {
             let stopped_tasks = self.stopped_tasks.load();
-            if stopped_tasks == StoppedTasks::EventLoop || stopped_tasks == StoppedTasks::MessageTraffic {
+            if stopped_tasks == StoppedTasks::MessageTraffic {
+                trace!("Message traffic stopped, continuing stopping...");
+                break;
+            }
+            if stopped_tasks == StoppedTasks::EventLoop {
+                trace!("Event loop stopped, continuing stopping...");
                 break;
             }
             trace!("Waiting for message traffic and other tasks to stop. Last: {stopped_tasks:?}");
@@ -600,6 +607,7 @@ impl DeviceManager {
             trace!(category = "[message_traffic]"; "Got next channel message: {message:?}");
             match message {
                 ChannelMessages::Connected(is_connected_message) => {
+                    HealthCheck::set_healthy_shared(is_connected_message)?;
                     publish_manager
                         .deal_with_connection_status_change_and_manage_periodic_publishing(
                             &self,
@@ -887,6 +895,8 @@ pub enum Error {
     CancellationRequested(#[from] crate::cancellation_token::Error),
     #[error("Error in publish sensor loop")]
     PublishSensorLoop,
+    #[error(transparent)]
+    HealthCheck(#[from] crate::healthcheck::Error),
 }
 
 impl From<ClientError> for Error {
