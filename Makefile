@@ -1,6 +1,6 @@
 .PHONY: default build test clean run build_release docker_build_amd64_static docker_build_arm64_static docker_build_all docker_build_multiarch release
 
-NO_PUSH ?= 0
+NO_PUSH :=
 amd64_target := x86_64
 arm64_target := aarch64
 binary := cmha
