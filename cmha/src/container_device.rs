@@ -45,21 +45,21 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error(transparent)]
     Container(#[from] bollard::errors::Error),
-    #[error("No stats available for the container")]
-    NoStats,
+    #[error("No stats available for container {0}")]
+    NoStats(String),
     #[error("Unknown error")]
     Unknown,
 }
 
 impl From<Error> for crate::devices::Error {
-    fn from(val: Error) -> Self {
-        crate::devices::Error::DeviceProvider(val.to_string())
+    fn from(e: Error) -> Self {
+        crate::devices::Error::DeviceProvider(format!("Error from container device: {e}"))
     }
 }
 
 impl From<bollard::errors::Error> for crate::devices::Error {
     fn from(e: bollard::errors::Error) -> Self {
-        crate::devices::Error::DeviceProvider(e.to_string())
+        crate::devices::Error::DeviceProvider(format!("Error in docker client: {e}"))
     }
 }
 
@@ -756,22 +756,22 @@ impl ContainerStats {
                         * Decimal::from(online_cpus);
                     Ok(Some(format!("{total_usage:.2}")))
                 } else {
-                    Err(Error::NoStats)
+                    Err(Error::NoStats(self.container_name.clone()))
                 }
             } else {
                 Ok(None)
             }
         } else {
-            Err(Error::NoStats)
+            Err(Error::NoStats(self.container_name.clone()))
         }
     }
-    fn get_memory(stat: &ContainerStatsResponse) -> Result<String> {
+    fn get_memory(&self, stat: &ContainerStatsResponse) -> Result<String> {
         if let Some(used_memory) = &stat.memory_stats
             && let Some(usage) = used_memory.usage
         {
             Ok((usage / 1024).to_string())
         } else {
-            Err(Error::NoStats)
+            Err(Error::NoStats(self.container_name.clone()))
         }
     }
 }
@@ -806,14 +806,14 @@ impl HandlesData for ContainerStats {
             )
             .await??;
         if let Some(stat) = stats.into_iter().next() {
-            let used_memory = Self::get_memory(&stat)?;
+            let used_memory = self.get_memory(&stat)?;
             let used_cpu = self.get_cpu(&stat).await?;
             Ok(hashmap! {
                 self.used_memory_state_topic.clone() => used_memory,
                 self.used_cpu_state_topic.clone() => used_cpu.unwrap_or(String::new())
             })
         } else {
-            Err(Error::NoStats.into())
+            Err(Error::NoStats(self.container_name.clone()).into())
         }
     }
 }

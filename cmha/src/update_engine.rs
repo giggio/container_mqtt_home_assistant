@@ -16,8 +16,6 @@ use crate::{
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Unknown error")]
-    Unknown,
     #[error(transparent)]
     Devices(#[from] crate::devices::Error),
     #[error(transparent)]

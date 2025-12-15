@@ -476,7 +476,10 @@ impl DeviceManager {
         trace!("Subscribing to command topics on initialization...");
         self.subscribe_to_commands(devices.clone()).await?;
         trace!("Publishing sensor data for all devices on initialization...");
-        self.publish_sensor_data_for_all_devices(devices.clone()).await?;
+        match self.publish_sensor_data_for_all_devices(devices.clone()).await {
+            Ok(()) => trace!("Sensor data published for all devices on initialization"),
+            Err(e) => error!("Error publishing sensor data for all devices on initialization: {e}"),
+        }
         let other_mqtt_device = self.clone();
         tokio::spawn(async move {
             trace!("Waiting before making available on initialization after discovery...");
