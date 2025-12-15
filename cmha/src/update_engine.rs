@@ -16,6 +16,8 @@ use crate::{
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("Unexpected error: {0}")]
+    Unexpected(String),
     #[error(transparent)]
     Devices(#[from] crate::devices::Error),
     #[error(transparent)]
@@ -49,11 +51,22 @@ impl TimedUpdateEventProvider {
                     break;
                 }
                 match get_events_from_devices(devices, cancellation_token.clone(), last_messages.clone()).await {
-                    Ok(events) => {
-                        trace!(category = "timed_update_event_provider"; "Got sensor data, sending data...");
-                        yield Ok(vec![UpdateEvent::Data(events)]);
+                    Ok(events_and_errors) => {
+                        for events_or_error in events_and_errors {
+                            match events_or_error {
+                                Ok(events) => {
+                                    trace!(category = "timed_update_event_provider"; "Got sensor data, sending data...");
+                                    yield Ok(vec![UpdateEvent::Data(events)]);
+                                },
+                                Err(err) => {
+                                    error!(category = "timed_update_event_provider"; "Error getting sensor data from a device: {err}");
+                                    yield Err(err);
+                                },
+                            }
+                        }
                     },
                     Err(err) => {
+                        error!(category = "timed_update_event_provider"; "Error getting sensor data: {err}");
                         yield Err(err);
                     },
                 }
@@ -166,8 +179,8 @@ async fn get_events_from_devices(
     devices: &Devices,
     cancellation_token: CancellationToken,
     last_messages: Arc<Mutex<HashMap<String, String>>>,
-) -> Result<HashMap<String, String>> {
-    Ok(devices.devices_vec().await.into_iter().async_map(async |device_arc| {
+) -> Result<Vec<Result<HashMap<String, String>>>> {
+    let events_and_errors = devices.devices_vec().await.into_iter().async_map(async |device_arc| {
             trace!(category = "timed_update_event_provider"; "Publishing sensor data...");
             let device = cancellation_token.wait_on(device_arc.read()).await?;
             debug!(category = "timed_update_event_provider"; "Getting entities data for device: {}", device.details.name);
@@ -175,22 +188,53 @@ async fn get_events_from_devices(
             trace!(category = "timed_update_event_provider"; "Got entities data for device: {}: {data:?}", device.details.name);
             Ok(data)
         })
-            .await
+            .await;
+    if events_and_errors.is_empty() {
+        trace!(category = "timed_update_event_provider";"No events recorded.");
+        return Ok(vec![Ok(HashMap::new())]);
+    }
+    let mut events_and_errors_with_events_merged =
+        events_and_errors
             .into_iter()
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .async_map(async |data| // filter later so that previous errors are not added to last_messages
-                filter_data(data, last_messages.clone(), cancellation_token.clone()).await
-            )
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .reduce(|mut events_acc, events| {
-                events_acc.extend(events);
-                events_acc
-            })
-            .unwrap_or_default())
+            .fold(vec![Ok(HashMap::new())], |mut events_and_errors_acc, data| {
+                match data {
+                    Ok(events) => {
+                        if events_and_errors_acc.is_empty() {
+                            error!(category = "timed_update_event_provider";"Accumulator is empty when getting events from devices.");
+                            events_and_errors_acc = vec![Ok(HashMap::new())];
+                        }
+                        let mut events_acc = match events_and_errors_acc.swap_remove(0) {
+                            Ok(events_acc) => events_acc,
+                            Err(err) => {
+                                error!(category = "timed_update_event_provider";"First item in accumulator expected to be a HashMap and it was an error.");
+                                events_and_errors_acc.push(Err(err));
+                                HashMap::new()
+                            }
+                        };
+                        events_acc.extend(events);
+                        events_and_errors_acc.insert(0, Ok(events_acc));
+                    }
+                    err => events_and_errors_acc.push(err),
+                }
+                events_and_errors_acc
+            });
+    if events_and_errors_with_events_merged.is_empty() {
+        error!(category = "timed_update_event_provider";"No events recorded but this was already checked, there is a bug.");
+        return Err(Error::Unexpected(
+            "No events recorded but this was already checked, there is a bug.".to_owned(),
+        ));
+    }
+    let events = match events_and_errors_with_events_merged.swap_remove(0) {
+        Ok(events_acc) => events_acc,
+        Err(err) => {
+            error!(category = "timed_update_event_provider";"First item in events and errors is expected to be a HashMap and it was an error.");
+            events_and_errors_with_events_merged.push(Err(err));
+            HashMap::new()
+        }
+    };
+    let filtered_data = filter_data(events, last_messages.clone(), cancellation_token.clone()).await;
+    events_and_errors_with_events_merged.push(filtered_data);
+    Ok(events_and_errors_with_events_merged)
 }
 
 async fn filter_data(
