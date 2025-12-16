@@ -181,7 +181,7 @@ impl ContainerDeviceProvider {
             });
             let container_health: Box<Sensor> =
                 EntityDetails::new(&device_identifier, "Health", "mdi:medication-outline").into();
-            let container_status: Box<Sensor> = EntityDetails::new_without_icon(&device_identifier, "Status").into();
+            let container_status: Box<Sensor> = EntityDetails::new(&device_identifier, "Run Status", "mdi:run").into();
             let container_status_data = Box::new(ContainerStatus {
                 state_topic: container_status.details().get_topic_for_state(None),
                 health_topic: container_health.details().get_topic_for_state(None),
