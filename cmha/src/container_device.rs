@@ -66,13 +66,15 @@ impl From<bollard::errors::Error> for crate::devices::Error {
 pub struct ContainerDeviceProvider {
     container_engine: ContainerEngine,
     provider_name: String,
+    container_name_prefix: Option<String>,
 }
 
 impl ContainerDeviceProvider {
-    pub fn new(provider_name: impl Into<String>) -> Result<Self> {
+    pub fn new(provider_name: impl Into<String>, container_name_prefix: Option<impl Into<String>>) -> Result<Self> {
         Ok(Self {
             container_engine: ContainerEngine::connect_with_socket_defaults()?,
             provider_name: provider_name.into(),
+            container_name_prefix: container_name_prefix.map(Into::into),
         })
     }
 
@@ -86,16 +88,29 @@ impl ContainerDeviceProvider {
     ) -> Vec<Device> {
         let mut device_vec = Vec::new();
         for container in containers {
-            let container_name = if let Some(name) = container.names.as_ref().and_then(|n| n.first()) {
+            let unprefixed_container_name = if let Some(name) = container.names.as_ref().and_then(|n| n.first()) {
                 name.trim_start_matches('/').to_string()
             } else {
                 warn!(
-                    "Container {} has no name, skipping",
+                    "Container {} has no name, will try it's id",
                     container.id.as_deref().unwrap_or_default()
                 );
-                continue;
+                if let Some(id) = container.id.as_deref() {
+                    id.to_string()
+                } else {
+                    warn!(
+                        "Container {} also has no id, skipping",
+                        container.id.as_deref().unwrap_or_default()
+                    );
+                    continue;
+                }
             };
-            let device_identifier = slugify(&container_name);
+            let prefixed_container_name = if let Some(prefix) = &self.container_name_prefix {
+                format!("{prefix}_{unprefixed_container_name}")
+            } else {
+                unprefixed_container_name.clone()
+            };
+            let device_identifier = slugify(&prefixed_container_name);
             let should_get_logs = Arc::new(AtomicBool::new(false));
             let log_text = Box::new(Sensor::new_simple(
                 device_identifier.clone(),
@@ -105,7 +120,7 @@ impl ContainerDeviceProvider {
             let log_text_data = Box::new(LogText {
                 state_topic: log_text.details().get_topic_for_state(None),
                 container_engine: self.container_engine.clone(),
-                container_name: container_name.clone(),
+                container_name: unprefixed_container_name.clone(),
                 should_get_logs: should_get_logs.clone(),
             });
             let get_logs_button = Box::new(Button::new(
@@ -133,7 +148,7 @@ impl ContainerDeviceProvider {
                 used_cpu_state_topic: used_cpus.details().get_topic_for_state(None),
                 used_memory_state_topic: used_memory.details().get_topic_for_state(None),
                 container_engine: self.container_engine.clone(),
-                container_name: container_name.clone(),
+                container_name: unprefixed_container_name.clone(),
                 last_cpu_stats: Arc::new(RwLock::new(None)),
             });
             let restart_button = Box::new(
@@ -144,25 +159,25 @@ impl ContainerDeviceProvider {
             let restart_button_data = Box::new(RestartButton {
                 command_topic: restart_button.details().get_topic_for_command(None),
                 container_engine: self.container_engine.clone(),
-                container_name: container_name.clone(),
+                container_name: unprefixed_container_name.clone(),
             });
             let start_button = Box::new(Button::new(&device_identifier, "Start", "mdi:play").can_be_made_unavailable());
             let start_button_data = Box::new(StartButton {
                 command_topic: start_button.details().get_topic_for_command(None),
                 container_engine: self.container_engine.clone(),
-                container_name: container_name.clone(),
+                container_name: unprefixed_container_name.clone(),
             });
             let stop_button = Box::new(Button::new(&device_identifier, "Stop", "mdi:stop").can_be_made_unavailable());
             let stop_button_data = Box::new(StopButton {
                 command_topic: stop_button.details().get_topic_for_command(None),
                 container_engine: self.container_engine.clone(),
-                container_name: container_name.clone(),
+                container_name: unprefixed_container_name.clone(),
             });
             let remove_button = Box::new(Button::new(&device_identifier, "Remove", "mdi:delete"));
             let remove_button_data = Box::new(RemoveButton {
                 command_topic: remove_button.details().get_topic_for_command(None),
                 container_engine: self.container_engine.clone(),
-                container_name: container_name.clone(),
+                container_name: unprefixed_container_name.clone(),
             });
             let container_health: Box<Sensor> =
                 EntityDetails::new(&device_identifier, "Health", "mdi:medication-outline").into();
@@ -174,7 +189,7 @@ impl ContainerDeviceProvider {
                 restart_button_availability_topic: restart_button.details().get_topic_for_availability(None),
                 stop_button_availability_topic: stop_button.details().get_topic_for_availability(None),
                 container_engine: self.container_engine.clone(),
-                container_name: container_name.clone(),
+                container_name: unprefixed_container_name.clone(),
             });
             let container_image: Box<Sensor> = EntityDetails::new(&device_identifier, "Image", "mdi:oci").into();
             let container_static_data = Box::new(ContainerStaticData {
@@ -185,7 +200,7 @@ impl ContainerDeviceProvider {
             });
             let container_device = Device::new_with_entities(
                 DeviceDetails {
-                    name: container_name.clone(),
+                    name: prefixed_container_name,
                     identifier: device_identifier.clone(),
                     manufacturer: "Giovanni Bassi".to_string(),
                     sw_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -223,7 +238,8 @@ impl ContainerDeviceProvider {
                 ],
                 self.id(),
                 cancellation_token.clone(),
-            );
+            )
+            .with_source_id(unprefixed_container_name);
             device_vec.push(container_device);
         }
         device_vec
@@ -356,7 +372,7 @@ impl DeviceProvider for ContainerDeviceProvider {
                 c.names
                     .as_ref()
                     .and_then(|names| names.first())
-                    .map(|name| slugify(name.trim_start_matches('/')))
+                    .map(|name| name.trim_start_matches('/').to_string())
             })
             .collect::<Vec<String>>();
         let devices_ids_to_remove = devices
@@ -364,12 +380,13 @@ impl DeviceProvider for ContainerDeviceProvider {
             .await
             .async_map(|device_lock| async move {
                 let device = device_lock.read().await;
-                (device.details.identifier.clone(), device.get_metadata::<String>())
+                (device.source_id.clone(), device.get_metadata::<String>())
             })
             .await
             .into_iter()
-            .filter(|(id, metadata)| !containers.contains(id) && !metadata.contains(&HOST_DEVICE_METADATA.to_string()))
-            .map(|(id, _)| id)
+            .filter_map(|(id, metadata)| {
+                id.filter(|id| !containers.contains(id) && !metadata.contains(&HOST_DEVICE_METADATA.to_string()))
+            })
             .collect::<HashSet<String>>();
         let devices_removed = devices
             .remove_devices(&devices_ids_to_remove, cancellation_token)
@@ -394,8 +411,8 @@ impl DeviceProvider for ContainerDeviceProvider {
             .into_iter()
             .filter(|c| {
                 c.names.as_ref().and_then(|names| names.first()).is_some_and(|name| {
-                    let device_identifier = slugify(name.trim_start_matches('/'));
-                    !current_devices_id.contains(&device_identifier)
+                    let device_identifier = name.trim_start_matches('/');
+                    !current_devices_id.contains(device_identifier)
                 })
             })
             .collect::<Vec<ContainerSummary>>();
@@ -411,7 +428,7 @@ impl DeviceProvider for ContainerDeviceProvider {
         );
         let ids = devices_to_add
             .iter()
-            .map(|d| d.details.identifier.clone())
+            .map(Device::identifier)
             .collect::<HashSet<String>>();
         devices.add_devices(devices_to_add, cancellation_token).await?;
         Ok(ids)
@@ -1455,7 +1472,7 @@ mod tests {
                 CancellationToken::default(),
             ),
         ]);
-        let device_provider = ContainerDeviceProvider::new(provider_name).unwrap();
+        let device_provider = ContainerDeviceProvider::new(provider_name, Some("test")).unwrap();
         let removed = device_provider
             .remove_missing_devices(&existing_devices, CancellationToken::default())
             .await

@@ -59,6 +59,7 @@ async fn run(cli: Cli) -> Result<()> {
             device_manager_id,
             #[cfg(debug_assertions)]
             sample_device,
+            prefix,
         } => {
             #[cfg(not(debug_assertions))]
             #[allow(non_upper_case_globals)]
@@ -72,7 +73,7 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             } else {
                 trace!("Adding Container device provider with name: {device_name}");
-                device_providers.push(Box::new(ContainerDeviceProvider::new(device_name)?));
+                device_providers.push(Box::new(ContainerDeviceProvider::new(device_name, prefix)?));
             }
             let device_providers_arc = Arc::new(device_providers);
             let (mut device_manager, eventloop, rx) = DeviceManager::new(

@@ -39,6 +39,9 @@ pub enum Commands {
 
         #[arg(short = 'i', long, env = formatc!("{ENV_PREFIX}DEVICE_MANAGER_ID"), default_value_t=device_manager_id_fn(), value_parser=parse_slug, help = "Name of the Device Manager that identifies this instance to Home Assistant and group all devices (and, therefore, entities). If not provided, will use the hostname.")]
         device_manager_id: String,
+
+        #[arg(long, env = formatc!("{ENV_PREFIX}PREFIX"), help = "Prefix to add do device name for each container. If not provided, will use only the container name.")]
+        prefix: Option<String>,
     },
     #[command(about = "Run the health check.", alias="healthcheck", long_about = None)]
     HealthCheck {},
@@ -246,6 +249,8 @@ mod tests {
                 "15000",
                 "--device-manager-id",
                 "prod-device-01",
+                "--prefix",
+                "my_prefix",
                 "--verbose",
             ])
             .collect::<Vec<_>>();
@@ -267,6 +272,7 @@ mod tests {
                     publish_interval: Duration::from_millis(15000),
                     device_manager_id: "prod_device_01".to_string(),
                     sample_device: false,
+                    prefix: Some("my_prefix".to_string()),
                 },
             }
         );

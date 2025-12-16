@@ -257,7 +257,10 @@ impl DeviceManager {
             trace!("Removing device for topic: {}", &discovery_topic);
             self.publish_to_client(discovery_topic, String::new()).await?;
         }
-        info!("Removed devices and entities from Home Assistant");
+        if log_enabled!(log::Level::Info) {
+            let devices_ids = devices.identifiers().await.into_iter().collect::<Vec<String>>().join(", ");
+            info!("Removed devices and entities from Home Assistant: {devices_ids}");
+        }
         Ok(())
     }
 

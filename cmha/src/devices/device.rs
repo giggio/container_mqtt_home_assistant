@@ -20,6 +20,7 @@ pub struct Device {
     pub data_handlers: Vec<Box<dyn HandlesData>>,
     pub availability_topic: String,
     pub metadata: Vec<Box<dyn Metadata>>,
+    pub source_id: Option<String>,
     #[allow(clippy::struct_field_names)]
     pub device_manager_id: String,
     cancellation_token: CancellationToken,
@@ -64,6 +65,7 @@ impl Device {
             availability_topic,
             metadata: vec![],
             device_manager_id,
+            source_id: None,
             cancellation_token,
         }
     }
@@ -85,8 +87,18 @@ impl Device {
             availability_topic,
             metadata: vec![],
             device_manager_id,
+            source_id: None,
             cancellation_token,
         }
+    }
+
+    pub fn with_source_id(mut self, source_id: String) -> Self {
+        self.source_id = Some(source_id);
+        self
+    }
+
+    pub fn identifier(&self) -> String {
+        self.source_id.clone().unwrap_or(self.details.identifier.clone())
     }
 
     pub fn with_metadata(mut self, metadata: Vec<Box<dyn Metadata>>) -> Self {
