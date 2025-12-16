@@ -258,7 +258,12 @@ impl DeviceManager {
             self.publish_to_client(discovery_topic, String::new()).await?;
         }
         if log_enabled!(log::Level::Info) {
-            let devices_ids = devices.identifiers().await.into_iter().collect::<Vec<String>>().join(", ");
+            let devices_ids = devices
+                .identifiers()
+                .await
+                .into_iter()
+                .collect::<Vec<String>>()
+                .join(", ");
             info!("Removed devices and entities from Home Assistant: {devices_ids}");
         }
         Ok(())
@@ -478,6 +483,17 @@ impl DeviceManager {
             .unwrap_or_else(|e| error!("Error publishing entities discovery: {e}"));
         trace!("Subscribing to command topics on initialization...");
         self.subscribe_to_commands(devices.clone()).await?;
+        if self
+            .must_stop_cancellation_token
+            // give it a few seconds to process the discovery, otherwise the entity state will not be available
+            .wait_on(time::sleep(self.availability_after_discovery))
+            .await
+            .is_err()
+        {
+            info!("Received Ctrl+C, not making available after discovery.");
+            return Ok(());
+        }
+
         trace!("Publishing sensor data for all devices on initialization...");
         match self.publish_sensor_data_for_all_devices(devices.clone()).await {
             Ok(()) => trace!("Sensor data published for all devices on initialization"),
