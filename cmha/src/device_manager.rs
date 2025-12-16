@@ -490,7 +490,7 @@ impl DeviceManager {
             .await
             .is_err()
         {
-            info!("Received Ctrl+C, not making available after discovery.");
+            info!("Received stop request, not making available after discovery.");
             return Ok(());
         }
 
@@ -518,7 +518,7 @@ impl DeviceManager {
                     }
                 }
                 Err(_) => {
-                    info!("Received Ctrl+C, not making available after discovery.");
+                    info!("Received stop request, not making available after discovery.");
                 }
             }
         });
@@ -540,7 +540,7 @@ impl DeviceManager {
                     .await
                     .is_err()
                 {
-                    info!(category = "[event_loop]"; "Received Ctrl+C, shutting down...");
+                    info!(category = "[event_loop]"; "Received stop request, shutting down...");
                     break;
                 }
             }
@@ -548,7 +548,7 @@ impl DeviceManager {
             tokio::select! {
                 sleep_result = self.event_loop_cancellation_token.wait_on(time::sleep(DURATION_MAX)) => {
                     if sleep_result.is_err() {
-                        info!(category = "[event_loop]"; "Received Ctrl+C, shutting down...");
+                        info!(category = "[event_loop]"; "Received stop request, shutting down...");
                         break;
                     }
                 }
