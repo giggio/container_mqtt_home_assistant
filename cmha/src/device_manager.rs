@@ -38,7 +38,10 @@ use crate::{
 
 const DURATION_KEEPALIVE: Duration = Duration::from_secs(45);
 const DURATION_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(not(test))]
 const DURATION_AVAILABILITY_AFTER_DISCOVERY: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const DURATION_AVAILABILITY_AFTER_DISCOVERY: Duration = Duration::from_secs(0);
 pub const DURATION_UNTIL_SHUTDOWN: Duration = Duration::from_secs(5);
 const DURATION_MAX: Duration = Duration::from_secs(u64::MAX);
 const DURATION_QUICK_CYCLE: Duration = Duration::from_millis(100);
