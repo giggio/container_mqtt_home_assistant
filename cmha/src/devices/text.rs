@@ -111,4 +111,36 @@ mod tests {
             serde_json::to_string_pretty(&expected_json).unwrap()
         );
     }
+
+    #[cfg(feature = "proptests")]
+    mod prop_test {
+        use super::*;
+        use crate::helpers::slugify;
+        use pretty_assertions::assert_eq;
+        use proptest::prelude::*;
+        proptest! {
+            #[test]
+            fn prop_test_text_json_for_discovery(device_identifier in "\\PC*", name in "\\PC*", icon in "\\PC*") {
+                let device = make_device();
+                let text = Text::new(device_identifier.clone(), name.clone(), icon.clone());
+                let json = futures::executor::block_on(text.json_for_discovery(&device, CancellationToken::default())).unwrap();
+                let name_slug = slugify(name.clone());
+                let expected_json = json!({
+                    name_slug.clone(): {
+                        "command_topic": format!("{device_identifier}/{name_slug}/command"),
+                        "icon": icon,
+                        "mode": "text",
+                        "name": name,
+                        "platform": "text",
+                        "state_topic": format!("{device_identifier}/{name_slug}/state"),
+                        "unique_id": format!("test_device_{}", name_slug),
+                    }
+                });
+                assert_eq!(
+                    serde_json::to_string_pretty(&json).unwrap(),
+                    serde_json::to_string_pretty(&expected_json).unwrap()
+                );
+            }
+        }
+    }
 }

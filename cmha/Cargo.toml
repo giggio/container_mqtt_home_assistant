@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[features]
+default = ["proptests"] # runs proptests with all tests, if build gets slow, remove it from default feature and run with `cargo nextest run --all-features prop_test::`
+proptests = []
+
 [lints]
 workspace = true
 
@@ -43,4 +47,5 @@ ctor = "0.6.0"
 mockall = "0.14.0"
 mockall_double = "0.3.1"
 pretty_assertions = "1.4.1"
+proptest = "1.9.0"
 serial_test = "3.2.0"
