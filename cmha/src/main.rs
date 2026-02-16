@@ -43,8 +43,10 @@ pub type Result<T> = std::result::Result<T, AppError>;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), String> {
-    let _logger_handle = logger::start().map_err(|e| format!("Error starting logger: {e}"))?;
-    run(Cli::parse()).await.map_err(|e| e.to_string())?;
+    let args = Cli::parse();
+    let _logger_handle = logger::start(args.verbosity.log_level_filter(), args.log_hide_date)
+        .map_err(|e| format!("Error starting logger: {e}"))?;
+    run(args).await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -100,7 +102,7 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::HealthCheck { .. } => {
             if healthcheck.check_if_healthy()? {
                 trace!("Health check passed");
-                if cli.verbose {
+                if log_enabled!(log::Level::Trace) {
                     println!("Health check passed");
                 }
             } else {
@@ -110,7 +112,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
     }
-    if cli.verbose {
+    if log_enabled!(log::Level::Trace) {
         info!("Shutting down...");
     }
     debug!("Shutting down...");
@@ -186,7 +188,7 @@ mod tests {
 
     #[ctor::ctor]
     static LOGGER: flexi_logger::LoggerHandle = {
-        let logger_handle_result = logger::start();
+        let logger_handle_result = logger::start(log::LevelFilter::Off, false);
         match logger_handle_result {
             Ok(r) => r,
             Err(e) => {

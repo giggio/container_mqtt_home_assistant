@@ -455,7 +455,7 @@ impl DeviceManager {
                     should_stop_event_loop = true;
                 } else {
                     trace!("Received MQTT state error ({error}), will wait...");
-                    self.got_disconnected("MQTT state error, retrying in 5 seconds...", "I/O Error")?;
+                    self.got_disconnected("MQTT state error, retrying in 5 seconds...", "MQTT state error")?;
                     should_event_loop_pooling_wait = true;
                 }
             }

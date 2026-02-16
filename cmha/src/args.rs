@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
+use clap_verbosity_flag::Verbosity;
 use const_format::formatc;
 
 use crate::helpers::{hostname, slugify};
@@ -10,11 +11,11 @@ const ENV_PREFIX: &str = "MQTT_";
 #[derive(Parser, Debug, PartialEq)]
 #[command(version, about, long_about = None)]
 pub struct Cli {
-    #[arg(display_order = 102, global = true, short, long, env = formatc!("{ENV_PREFIX}QUIET"))]
-    pub quiet: bool,
+    #[command(flatten)]
+    pub verbosity: Verbosity,
 
-    #[arg(display_order = 103, global = true, long, env = formatc!("{ENV_PREFIX}VERBOSE"))]
-    pub verbose: bool,
+    #[arg(short = 'd', long, env = formatc!("{ENV_PREFIX}LOG_HIDE_DATE"), global = true)]
+    pub log_hide_date: bool,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -224,7 +225,7 @@ mod tests {
             .chain(vec!["--verbose"])
             .collect::<Vec<_>>();
         let cli = Cli::parse_from(args);
-        assert!(cli.verbose);
+        assert_eq!(cli.verbosity.log_level().unwrap(), log::Level::Warn);
     }
 
     #[test]
@@ -234,7 +235,7 @@ mod tests {
             .chain(vec!["--quiet"])
             .collect::<Vec<_>>();
         let cli = Cli::parse_from(args);
-        assert!(cli.quiet);
+        assert!(cli.verbosity.is_silent());
     }
 
     #[cfg(debug_assertions)]
@@ -251,15 +252,16 @@ mod tests {
                 "prod-device-01",
                 "--prefix",
                 "my_prefix",
-                "--verbose",
+                "--quiet",
+                "--log-hide-date",
             ])
             .collect::<Vec<_>>();
         let cli = Cli::parse_from(args);
         assert_eq!(
             cli,
             Cli {
-                quiet: false,
-                verbose: true,
+                verbosity: Verbosity::new(0, 1),
+                log_hide_date: true,
                 command: Commands::Run {
                     mqtt_broker_info: MqttBrokerInfo {
                         username: "test_user".to_string(),
