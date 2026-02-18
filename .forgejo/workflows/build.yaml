@@ -26,7 +26,7 @@ jobs:
     name: cargo build
     runs-on: docker
     container:
-      image: ghcr.io/catthehacker/ubuntu:act-24.04
+      image: ghcr.io/catthehacker/ubuntu:custom-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install Nix
@@ -38,14 +38,32 @@ jobs:
         with:
           name: cmha
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Build and test
-        run: nix build --print-build-logs
-      - name: Login to Docker Hub
+      - name: Build and test x86_64
+        run: make target/tmp/cmha_x86_64
+      - name: Build and test aarch64
+        run: make target/tmp/cmha_aarch64
+      - name: Upload binaries
         if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/')
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v5
+        with:
+          name: binaries
+          path: target/tmp/
+  deploy:
+    name: deploy
+    needs: [build]
+    if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/')
+    runs-on: codeberg-small
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download binaries
+        uses: https://code.forgejo.org/forgejo/download-artifact@v7
+        with:
+          name: binaries
+          path: target/tmp/
+      - name: Login to Docker Hub
         uses: https://github.com/docker/login-action.git@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build and push
-        if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/')
         run: make
