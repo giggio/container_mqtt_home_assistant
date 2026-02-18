@@ -1,10 +1,10 @@
-.PHONY: default build test clean run build_release docker_build_amd64_static docker_build_arm64_static docker_build_all docker_build_multiarch release
+.PHONY: default build test clean run build_release buildah_build_amd64_static buildah_build_arm64_static buildah_build_all buildah_build_multiarch release
 
 NO_PUSH :=
 amd64_target := x86_64
 arm64_target := aarch64
 binary := cmha
-image_name := cmha
+image_name := docker.io/library/giggio/cmha
 version := $(shell yq -oy .package.version cmha/Cargo.toml)
 rust_deps := $(shell git ls-files --cached --modified --others --exclude-standard '*.rs' ':**/Cargo.toml' ':**/Cargo.lock')
 
@@ -35,22 +35,38 @@ target/tmp/$(binary)_$(arm64_target): $(rust_deps)
 	mkdir -p target/tmp
 	cp -f result/bin/$(binary)_$(arm64_target) target/tmp/
 
-docker_build_amd64_static: target/tmp/$(binary)_$(amd64_target)
-	docker buildx build -f Containerfile --build-arg target_file=target/tmp/$(binary)_$(amd64_target) \
-		-t giggio/$(image_name):$(version)-amd64 -t giggio/$(image_name):amd64 --platform linux/amd64 --build-arg PLATFORM=x86_64 $(if $(NO_PUSH),, --push) .
+buildah_build_amd64_static: target/tmp/$(binary)_$(amd64_target)
+	buildah build -f Containerfile --build-arg target_file=target/tmp/$(binary)_$(amd64_target) \
+		-t $(image_name):$(version)-amd64 -t $(image_name):amd64 \
+	  --platform linux/amd64 --signature-policy ./buildah-policy.json --format=docker --pull .
+	if [ "$(NO_PUSH)" == "" ]; then \
+	  buildah push $(image_name):$(version)-amd64 -t $(image_name):amd64; \
+	fi
 
-docker_build_arm64_static: target/tmp/$(binary)_$(arm64_target)
-	docker buildx build -f Containerfile --build-arg target_file=target/tmp/$(binary)_$(arm64_target) \
-		-t giggio/$(image_name):$(version)-arm64 -t giggio/$(image_name):arm64 --platform linux/arm64 --build-arg PLATFORM=aarch64 $(if $(NO_PUSH),, --push) .
+buildah_build_arm64_static: target/tmp/$(binary)_$(arm64_target)
+	buildah build -f Containerfile --build-arg target_file=target/tmp/$(binary)_$(arm64_target) \
+		-t $(image_name):$(version)-arm64 -t $(image_name):arm64 \
+	  --platform linux/arm64 --signature-policy ./buildah-policy.json --format=docker --pull .
+	if [ "$(NO_PUSH)" == "" ]; then \
+	  buildah push $(image_name):$(version)-arm64 -t $(image_name):arm64; \
+	fi
 
-docker_build_all: docker_build_amd64_static docker_build_arm64_static
+buildah_build_all: buildah_build_amd64_static buildah_build_arm64_static
 
-docker_build_multiarch:
-	docker buildx imagetools create -t giggio/$(image_name):latest \
-		giggio/$(image_name):amd64 \
-		giggio/$(image_name):arm64
-	docker buildx imagetools create -t giggio/$(image_name):$(version) \
-		giggio/$(image_name):$(version)-amd64 \
-		giggio/$(image_name):$(version)-arm64
+buildah_build_multiarch:
+	buildah manifest rm $(image_name):latest 2> /dev/null || true
+	buildah manifest create $(image_name):latest
+	buildah manifest add $(image_name):latest $(image_name):amd64
+	buildah manifest add $(image_name):latest $(image_name):arm64
+	if [ "$(NO_PUSH)" == "" ]; then \
+    buildah manifest push --all $(image_name):latest; \
+	fi
+	buildah manifest rm $(image_name):$(version) 2> /dev/null || true
+	buildah manifest create $(image_name):$(version)
+	buildah manifest add $(image_name):$(version) $(image_name):$(version)-amd64
+	buildah manifest add $(image_name):$(version) $(image_name):$(version)-arm64
+	if [ "$(NO_PUSH)" == "" ]; then \
+	  buildah manifest push --all $(image_name):$(version); \
+	fi
 
-release: docker_build_all docker_build_multiarch
+release: buildah_build_all buildah_build_multiarch
