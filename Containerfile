@@ -1,4 +1,4 @@
-FROM debian:stable-slim AS certs
+FROM docker.io/library/debian:stable-slim AS certs
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
   rm -rf /var/lib/apt/lists/*
 
