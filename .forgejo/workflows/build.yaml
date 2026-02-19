@@ -25,7 +25,10 @@ on:
 jobs:
   try:
     name: try
-    runs-on: codeberg-small
+    # runs-on: codeberg-small
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:custom-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install buildah
