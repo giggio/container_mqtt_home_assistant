@@ -37,6 +37,11 @@ jobs:
           apt-get install buildah -y
       - name: Setup buildah
         uses: https://codeberg.org/qikp/setup-buildah@main
+      - name: Login to Docker Hub
+        uses: https://github.com/docker/login-action.git@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Debug
         run: |
           grep -E '/docker|/lxc|/kubepods' /proc/1/cgroup || [ -f /.dockerenv ] && echo "inside container"
