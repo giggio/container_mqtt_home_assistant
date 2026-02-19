@@ -3,63 +3,39 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
-    tags:
-      - "[0-9]+.[0-9]+.[0-9]+*"
-    paths-ignore:
-      - "*.md"
-      - "*.yaml"
-      - .editorconfig
-      - ".forgejo/**"
-      - .gitignore
-  pull_request:
-    branches:
-      - main
-    paths-ignore:
-      - "*.md"
-      - "*.yaml"
-      - .editorconfig
-      - ".forgejo/**"
-      - .gitignore
+      - temp
+#      - main
+#    tags:
+#      - "[0-9]+.[0-9]+.[0-9]+*"
+#    paths-ignore:
+#      - "*.md"
+#      - "*.yaml"
+#      - .editorconfig
+#      - ".forgejo/**"
+#      - .gitignore
+#  pull_request:
+#    branches:
+#      - main
+#    paths-ignore:
+#      - "*.md"
+#      - "*.yaml"
+#      - .editorconfig
+#      - ".forgejo/**"
+#      - .gitignore
 jobs:
-  build:
-    name: cargo build
-    runs-on: docker
-    container:
-      image: ghcr.io/catthehacker/ubuntu:custom-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Nix
-        uses: https://github.com/DeterminateSystems/nix-installer-action.git@main
-      - name: Set user for Cachix
-        run: echo "USER=root" >> $GITHUB_ENV
-      - name: Set up cache
-        uses: https://github.com/cachix/cachix-action.git@v15
-        with:
-          name: cmha
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Build and test x86_64
-        run: make target/tmp/cmha_x86_64
-      - name: Build and test aarch64
-        run: make target/tmp/cmha_aarch64
-      - name: Upload binaries
-        if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/')
-        uses: https://code.forgejo.org/forgejo/upload-artifact@v5
-        with:
-          name: binaries
-          path: target/tmp/
-  deploy:
-    name: deploy
-    needs: [build]
-    if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/')
+  try:
+    name: try
     runs-on: codeberg-small
+    container:
+      image: debian:trixie
+      env:
+        BUILDAH_ISOLATION: chroot
     steps:
+      - name: Install buildah
+        run: |
+          apt-get update
+          apt-get install buildah git nodejs docker-cli -y
       - uses: actions/checkout@v4
-      - name: Download binaries
-        uses: https://code.forgejo.org/forgejo/download-artifact@v7
-        with:
-          name: binaries
-          path: target/tmp/
       - name: Setup buildah
         uses: https://codeberg.org/qikp/setup-buildah@main
       - name: Login to Docker Hub
@@ -67,8 +43,68 @@ jobs:
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Debug
+        run: |
+          grep -E '/docker|/lxc|/kubepods' /proc/1/cgroup || [ -f /.dockerenv ] && echo "inside container"
+          cat /proc/sys/kernel/unprivileged_userns_clone
+          command -v newuidmap newgidmap || echo "missing uidmap package"
+          id -un
+          awk -F: -v u="$(id -un)" '$1==u{print $0}' /etc/subuid /etc/subgid || echo "no subuid/subgid entry for $(id -un)"
       - name: Build and push
         run: |
-          apt-get update
-          apt-get install buildah -y
-          make
+          mkdir -p target/tmp/
+          echo test > target/tmp/cmha_x86_64
+          buildah --log-level=debug build -f Containerfile --build-arg target_file=target/tmp/cmha_x86_64 \
+          -t docker.io/library/giggio/cmha:0.1.0-amd64 -t docker.io/library/giggio/cmha:amd64 \
+          --platform linux/amd64 --signature-policy ./buildah-policy.json --format=docker --pull .
+#  build:
+#    name: cargo build
+#    runs-on: docker
+#    container:
+#      image: ghcr.io/catthehacker/ubuntu:custom-24.04
+#    steps:
+#      - uses: actions/checkout@v4
+#      - name: Install Nix
+#        uses: https://github.com/DeterminateSystems/nix-installer-action.git@main
+#      - name: Set user for Cachix
+#        run: echo "USER=root" >> $GITHUB_ENV
+#      - name: Set up cache
+#        uses: https://github.com/cachix/cachix-action.git@v15
+#        with:
+#          name: cmha
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#      - name: Build and test x86_64
+#        run: make target/tmp/cmha_x86_64
+#      - name: Build and test aarch64
+#        run: make target/tmp/cmha_aarch64
+#      - name: Upload binaries
+#        if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/')
+#        uses: https://code.forgejo.org/forgejo/upload-artifact@v5
+#        with:
+#          name: binaries
+#          path: target/tmp/
+#  deploy:
+#    name: deploy
+#    needs: [build]
+#    if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/')
+#    runs-on: codeberg-small
+#    steps:
+#      - uses: actions/checkout@v4
+#      - name: Download binaries
+#        uses: https://code.forgejo.org/forgejo/download-artifact@v7
+#        with:
+#          name: binaries
+#          path: target/tmp/
+#      - name: Setup buildah
+#        uses: https://codeberg.org/qikp/setup-buildah@main
+#      - name: Login to Docker Hub
+#        uses: https://github.com/docker/login-action.git@v3
+#        with:
+#          username: ${{ vars.DOCKERHUB_USERNAME }}
+#          password: ${{ secrets.DOCKERHUB_TOKEN }}
+#      - name: Install buildah
+#        run: |
+#          apt-get update
+#          apt-get install buildah -y
+#      - name: Build and push
+#        run: make
