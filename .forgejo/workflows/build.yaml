@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - temp
+      - buildah2
 #      - main
 #    tags:
 #      - "[0-9]+.[0-9]+.[0-9]+*"
@@ -25,7 +25,8 @@ on:
 jobs:
   try:
     name: try
-    runs-on: codeberg-small
+    # runs-on: codeberg-small
+    runs-on: docker
     container:
       image: debian:trixie
       env:
@@ -46,14 +47,21 @@ jobs:
       - name: Debug
         run: |
           grep -E '/docker|/lxc|/kubepods' /proc/1/cgroup || [ -f /.dockerenv ] && echo "inside container"
-          cat /proc/sys/kernel/unprivileged_userns_clone
+          cat /proc/sys/kernel/unprivileged_userns_clone || echo "unprivileged_userns_clone not set"
           command -v newuidmap newgidmap || echo "missing uidmap package"
           id -un
           awk -F: -v u="$(id -un)" '$1==u{print $0}' /etc/subuid /etc/subgid || echo "no subuid/subgid entry for $(id -un)"
-      - name: Build and push
+      # - name: Build arm64
+      #   run: |
+      #     mkdir -p target/tmp/
+      #     echo test_aarch64 > target/tmp/cmha_aarch64
+      #     buildah build -f Containerfile --build-arg target_file=target/tmp/cmha_aarch64 \
+      #     -t docker.io/library/giggio/cmha:0.1.0-arm64 -t docker.io/library/giggio/cmha:arm64 \
+      #     --platform linux/arm64 --signature-policy ./buildah-policy.json --format=docker --pull .
+      - name: Build amd64
         run: |
           mkdir -p target/tmp/
-          echo test > target/tmp/cmha_x86_64
+          echo test_x86_64 > target/tmp/cmha_x86_64
           buildah --log-level=debug build -f Containerfile --build-arg target_file=target/tmp/cmha_x86_64 \
           -t docker.io/library/giggio/cmha:0.1.0-amd64 -t docker.io/library/giggio/cmha:amd64 \
           --platform linux/amd64 --signature-policy ./buildah-policy.json --format=docker --pull .
