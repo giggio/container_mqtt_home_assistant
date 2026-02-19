@@ -44,28 +44,18 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Debug
         run: |
-          docker run --rm \
-            -v /workspace:.:ro \
-            -v /root/.docker/config.json:/kaniko/.docker/config.json:ro \
-            gcr.io/kaniko-project/executor:latest \
-            --context . \
-            --dockerfile Containerfile \
-            --destination docker.io/giggio/cmha:0.1.0-amd64 \
-            --cache=true
-          # - name: Debug
-          #   run: |
-          #     grep -E '/docker|/lxc|/kubepods' /proc/1/cgroup || [ -f /.dockerenv ] && echo "inside container"
-          #     cat /proc/sys/kernel/unprivileged_userns_clone
-          #     command -v newuidmap newgidmap || echo "missing uidmap package"
-          #     id -un
-          #     awk -F: -v u="$(id -un)" '$1==u{print $0}' /etc/subuid /etc/subgid || echo "no subuid/subgid entry for $(id -un)"
-          # - name: Build and push
-          #   run: |
-          #     mkdir -p target/tmp/
-          #     echo test > target/tmp/cmha_x86_64
-          #     buildah --log-level=debug build -f Containerfile --build-arg target_file=target/tmp/cmha_x86_64 \
-          #     -t docker.io/library/giggio/cmha:0.1.0-amd64 -t docker.io/library/giggio/cmha:amd64 \
-          #     --platform linux/amd64 --signature-policy ./buildah-policy.json --format=docker --pull .
+          grep -E '/docker|/lxc|/kubepods' /proc/1/cgroup || [ -f /.dockerenv ] && echo "inside container"
+          cat /proc/sys/kernel/unprivileged_userns_clone
+          command -v newuidmap newgidmap || echo "missing uidmap package"
+          id -un
+          awk -F: -v u="$(id -un)" '$1==u{print $0}' /etc/subuid /etc/subgid || echo "no subuid/subgid entry for $(id -un)"
+      - name: Build and push
+        run: |
+          mkdir -p target/tmp/
+          echo test > target/tmp/cmha_x86_64
+          buildah --log-level=debug build -f Containerfile --build-arg target_file=target/tmp/cmha_x86_64 \
+          -t docker.io/library/giggio/cmha:0.1.0-amd64 -t docker.io/library/giggio/cmha:amd64 \
+          --platform linux/amd64 --signature-policy ./buildah-policy.json --format=docker --pull .
 #  build:
 #    name: cargo build
 #    runs-on: docker
