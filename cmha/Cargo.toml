@@ -16,7 +16,7 @@ cmha_proc_macros = { path = "../cmha_proc_macros" }
 bollard = "0.19.3"
 chrono = { version = "0.4", features = ["serde"] }
 log = { version = "0.4.28", features = ["kv"] }
-rand = "0.9.2"
+rand = "0.9.3"
 rumqttc = "0.25"
 rustls = "0.23.32"
 rustls-platform-verifier = "0.6.1"
