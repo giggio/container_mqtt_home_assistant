@@ -86,6 +86,7 @@
             yq-go
             gnumake
             bacon
+            forgejo-runner
           ];
         };
         formatter = pkgs.nixpkgs-fmt;

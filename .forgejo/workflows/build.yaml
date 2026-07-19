@@ -21,29 +21,44 @@ on:
       - .editorconfig
       - ".forgejo/**"
       - .gitignore
+env:
+  CI_RUN: ${{ forgejo.server_url != '' && '1' || '' }}
 jobs:
   build:
     name: cargo build
     runs-on: docker
     container:
-      image: ghcr.io/catthehacker/ubuntu:custom-24.04
+      # derived from nixos/nix:2.32.8
+      image: giggio/nixaction
     steps:
       - uses: actions/checkout@v4
-      - name: Install Nix
-        uses: https://github.com/DeterminateSystems/nix-installer-action.git@main
+      - run: |
+          echo -e 'experimental-features = nix-command flakes' >> /etc/nix/nix.conf
+          echo -e 'substituters = https://cache.nixos.org/ https://nix-community.cachix.org' >> /etc/nix/nix.conf
+          sed -i '/trusted-public-keys/d' /etc/nix/nix.conf
+          echo -e 'trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=' >> /etc/nix/nix.conf
+          echo "Starting nix development environment..."
+          nix print-dev-env . --verbose
+        name: Configure nix
       - name: Set user for Cachix
         run: echo "USER=root" >> $GITHUB_ENV
+        if: success() && env.CI_RUN
       - name: Set up cache
         uses: https://github.com/cachix/cachix-action.git@v15
         with:
           name: cmha
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        if: success() && env.CI_RUN
       - name: Build and test x86_64
-        run: make target/tmp/cmha_x86_64
+        run: |
+          source <(nix print-dev-env . --verbose)
+          make target/tmp/cmha_x86_64
       - name: Build and test aarch64
-        run: make target/tmp/cmha_aarch64
+        run: |
+          source <(nix print-dev-env . --verbose)
+          make target/tmp/cmha_aarch64
       - name: Upload binaries
-        if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/')
+        if: success() && forgejo.event_name != 'pull_request' && startsWith(forgejo.ref, 'refs/tags/') && env.CI_RUN
         uses: https://code.forgejo.org/forgejo/upload-artifact@v5
         with:
           name: binaries

@@ -22,16 +22,19 @@ clean:
 run:
 	cargo run
 
+build_ci:
+	forgejo-runner exec -W .forgejo/workflows/build.yaml -j build
+
 build_release:
 	cargo build --release
 
 target/tmp/$(binary)_$(amd64_target): $(rust_deps)
-	nix build .\#$(amd64_target) --print-build-logs
+	nix build .#$(amd64_target) --print-build-logs
 	mkdir -p target/tmp
 	cp -f result/bin/$(binary)_$(amd64_target) target/tmp/
 
 target/tmp/$(binary)_$(arm64_target): $(rust_deps)
-	nix build .\#$(arm64_target) --print-build-logs
+	nix build .#$(arm64_target) --print-build-logs
 	mkdir -p target/tmp
 	cp -f result/bin/$(binary)_$(arm64_target) target/tmp/
 
