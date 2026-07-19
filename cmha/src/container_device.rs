@@ -1,12 +1,10 @@
 use async_trait::async_trait;
 use bollard::{
+    models::{ContainerCpuStats, ContainerStatsResponse, ContainerSummary, HealthStatusEnum},
     query_parameters::{
         DataUsageOptions, InspectContainerOptionsBuilder, ListContainersOptionsBuilder, ListNetworksOptions,
         LogsOptionsBuilder, RemoveContainerOptionsBuilder, RestartContainerOptionsBuilder,
         StartContainerOptionsBuilder, StatsOptionsBuilder, StopContainerOptionsBuilder,
-    },
-    secret::{
-        ContainerCpuStats, ContainerStatsResponse, ContainerSummary, ContainerSummaryStateEnum, HealthStatusEnum,
     },
 };
 use chrono::Duration;
@@ -563,7 +561,6 @@ struct DiskFree {
 }
 #[async_trait]
 impl HandlesData for DiskFree {
-    #[allow(clippy::too_many_lines)]
     async fn get_entity_data(
         &self,
         cancellation_token: CancellationToken,
@@ -571,102 +568,35 @@ impl HandlesData for DiskFree {
         let data_usage = cancellation_token
             .wait_on(self.container_engine.df(None::<DataUsageOptions>))
             .await??;
-        if let Some(image_summary) = data_usage.images
-            && let Some(volume_summary) = data_usage.volumes
-            && let Some(build_cache_summary) = data_usage.build_cache
-            && let Some(containers_summary) = data_usage.containers
+        if let Some(images) = data_usage.image_usage
+            && let Some(volumes) = data_usage.volume_usage
+            && let Some(build_caches) = data_usage.build_cache_usage
+            && let Some(containers) = data_usage.container_usage
         {
-            let mut images_active_count = 0;
-            let mut image_size = 0;
-            let mut image_reclaimable = 0;
-            let mut number_of_images = 0;
-            for img in image_summary {
-                number_of_images += 1;
-                image_size += img.size;
-                if img.containers > 0 {
-                    images_active_count += 1;
-                } else {
-                    image_reclaimable += img.size;
-                }
-            }
-
-            let mut volumes_active_count = 0;
-            let mut volume_size = 0i64;
-            let mut volume_reclaimable = 0i64;
-            let mut number_of_volumes = 0;
-            for vol in volume_summary {
-                number_of_volumes += 1;
-                if let Some(usage_data) = &vol.usage_data {
-                    volume_size += usage_data.size;
-                    if usage_data.ref_count > 0 {
-                        volumes_active_count += 1;
-                    } else {
-                        volume_reclaimable += usage_data.size;
-                    }
-                }
-            }
-
-            let mut build_cache_active_count = 0;
-            let mut build_cache_size = 0;
-            let mut build_cache_reclaimable = 0;
-            let mut number_of_build_caches = 0;
-            for bc in build_cache_summary {
-                number_of_build_caches += 1;
-                let size = bc.size.unwrap_or(0);
-                build_cache_size += size;
-                if bc.in_use.unwrap_or(false) {
-                    build_cache_active_count += 1;
-                } else {
-                    build_cache_reclaimable += size;
-                }
-            }
-
-            let mut containers_active_count = 0;
-            let mut number_of_containers = 0;
-            let mut containers_reclaimable = 0;
-            let mut container_size = 0;
-            for container in containers_summary {
-                number_of_containers += 1;
-                let size = container.size_rw.unwrap_or(0);
-                container_size += size;
-                if let Some(state) = &container.state
-                    && matches!(
-                        state,
-                        ContainerSummaryStateEnum::RUNNING
-                            | ContainerSummaryStateEnum::PAUSED
-                            | ContainerSummaryStateEnum::RESTARTING
-                    )
-                {
-                    containers_active_count += 1;
-                } else {
-                    containers_reclaimable += size;
-                }
-            }
-
             let data = hashmap! {
-                self.images_state_topic.clone() => number_of_images.to_string(),
+                self.images_state_topic.clone() => images.total_count.unwrap_or_default().to_string(),
                 self.images_attributes_state_topic.clone() => json!({
-                    "images_active": images_active_count,
-                    "images_size_kib": (image_size / 1024),
-                    "images_reclaimable_kib": (image_reclaimable / 1024),
+                    "images_active": images.active_count.unwrap_or_default(),
+                    "images_size_kib": (images.total_size.unwrap_or_default() / 1024),
+                    "images_reclaimable_kib": (images.reclaimable.unwrap_or_default() / 1024),
                 }).to_string(),
-                self.volumes_state_topic.clone() => number_of_volumes.to_string(),
+                self.volumes_state_topic.clone() => volumes.total_count.unwrap_or_default().to_string(),
                 self.volumes_attributes_state_topic.clone() => json!({
-                    "volumes_active": volumes_active_count,
-                    "volumes_size_kib": (volume_size / 1024),
-                    "volumes_reclaimable_kib": (volume_reclaimable / 1024),
+                    "volumes_active": volumes.active_count.unwrap_or_default(),
+                    "volumes_size_kib": (volumes.total_size.unwrap_or_default() / 1024),
+                    "volumes_reclaimable_kib": (volumes.reclaimable.unwrap_or_default() / 1024),
                 }).to_string(),
-                self.build_cache_state_topic.clone() => number_of_build_caches.to_string(),
+                self.build_cache_state_topic.clone() => build_caches.total_count.unwrap_or_default().to_string(),
                 self.build_cache_attributes_state_topic.clone() => json!({
-                    "build_caches_active": build_cache_active_count,
-                    "build_caches_size_kib": (build_cache_size / 1024),
-                    "build_caches_reclaimable_kib": (build_cache_reclaimable / 1024),
+                    "build_caches_active": build_caches.active_count.unwrap_or_default(),
+                    "build_caches_size_kib": (build_caches.total_size.unwrap_or_default() / 1024),
+                    "build_caches_reclaimable_kib": (build_caches.reclaimable.unwrap_or_default() / 1024),
                 }).to_string(),
-                self.number_of_containers_state_topic.clone() => number_of_containers.to_string(),
+                self.number_of_containers_state_topic.clone() => containers.total_count.unwrap_or_default().to_string(),
                 self.number_of_containers_attributes_state_topic.clone() => json!({
-                    "containers_active": containers_active_count,
-                    "containers_size_kib": (container_size / 1024),
-                    "containers_reclaimable_kib": (containers_reclaimable / 1024),
+                    "containers_active": containers.active_count.unwrap_or_default(),
+                    "containers_size_kib": (containers.total_size.unwrap_or_default() / 1024),
+                    "containers_reclaimable_kib": (containers.reclaimable.unwrap_or_default() / 1024),
                 }).to_string(),
             };
             trace!("Got df data from ContainerEngine: {data:?}");
@@ -994,12 +924,14 @@ pub mod container_engine_client {
     use bollard::{
         container::LogOutput,
         errors::Error,
-        models::{ContainerInspectResponse, ContainerSummary, Network, SystemDataUsageResponse, SystemInfo},
+        models::{
+            ContainerInspectResponse, ContainerStatsResponse, ContainerSummary, Network, SystemDataUsageResponse,
+            SystemInfo,
+        },
         query_parameters::{
             DataUsageOptions, InspectContainerOptions, ListContainersOptions, ListNetworksOptions, LogsOptions,
             RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
         },
-        secret::ContainerStatsResponse,
     };
     use futures::stream::Stream;
     use std::pin::Pin;
@@ -1034,10 +966,9 @@ mod tests {
     use super::*;
     use bollard::{
         container::LogOutput,
-        models::{ContainerStateStatusEnum, ContainerSummary, SystemDataUsageResponse, SystemInfo},
-        secret::{
+        models::{
             ContainerCpuStats, ContainerCpuUsage, ContainerInspectResponse, ContainerMemoryStats,
-            ContainerSummaryStateEnum, HealthStatusEnum,
+            ContainerStateStatusEnum, ContainerSummary, HealthStatusEnum, SystemDataUsageResponse, SystemInfo,
         },
     };
     use container_engine_client::MockContainerEngine;
@@ -1486,59 +1417,34 @@ mod tests {
 
         mock_container_engine.expect_df().returning(|_| {
             Ok(SystemDataUsageResponse {
-                images: Some(vec![
-                    bollard::models::ImageSummary {
-                        size: 1024 * 1024, // 1MB
-                        containers: 1,
-                        ..Default::default()
-                    },
-                    bollard::models::ImageSummary {
-                        size: 2048 * 1024, // 2MB
-                        containers: 0,
-                        ..Default::default()
-                    },
-                ]),
-                volumes: Some(vec![
-                    bollard::models::Volume {
-                        usage_data: Some(bollard::models::VolumeUsageData {
-                            size: 4096 * 1024, // 4MB
-                            ref_count: 1,
-                        }),
-                        ..Default::default()
-                    },
-                    bollard::models::Volume {
-                        usage_data: Some(bollard::models::VolumeUsageData {
-                            size: 8192 * 1024, // 8MB
-                            ref_count: 0,
-                        }),
-                        ..Default::default()
-                    },
-                ]),
-                build_cache: Some(vec![
-                    bollard::models::BuildCache {
-                        size: Some(16384 * 1024), // 16MB
-                        in_use: Some(true),
-                        ..Default::default()
-                    },
-                    bollard::models::BuildCache {
-                        size: Some(32768 * 1024), // 32MB
-                        in_use: Some(false),
-                        ..Default::default()
-                    },
-                ]),
-                containers: Some(vec![
-                    ContainerSummary {
-                        size_rw: Some(65_536 * 1024), // 64MB
-                        state: Some(ContainerSummaryStateEnum::RUNNING),
-                        ..Default::default()
-                    },
-                    ContainerSummary {
-                        size_rw: Some(131_072 * 1024), // 128MB
-                        state: Some(ContainerSummaryStateEnum::EXITED),
-                        ..Default::default()
-                    },
-                ]),
-                ..Default::default()
+                image_usage: Some(bollard::models::ImagesDiskUsage {
+                    total_count: Some(2),
+                    active_count: Some(1),
+                    total_size: Some(3072 * 1024), // 3MB
+                    reclaimable: Some(2048 * 1024),
+                    ..Default::default()
+                }),
+                volume_usage: Some(bollard::models::VolumesDiskUsage {
+                    total_count: Some(2),
+                    active_count: Some(1),
+                    total_size: Some(12288 * 1024), // 12MB
+                    reclaimable: Some(8192 * 1024),
+                    ..Default::default()
+                }),
+                build_cache_usage: Some(bollard::models::BuildCacheDiskUsage {
+                    total_count: Some(2),
+                    active_count: Some(1),
+                    total_size: Some(49152 * 1024), // 48MB
+                    reclaimable: Some(32768 * 1024),
+                    ..Default::default()
+                }),
+                container_usage: Some(bollard::models::ContainersDiskUsage {
+                    total_count: Some(2),
+                    active_count: Some(1),
+                    total_size: Some(196_608 * 1024), // 192MB
+                    reclaimable: Some(131_072 * 1024),
+                    ..Default::default()
+                }),
             })
         });
 
