@@ -186,7 +186,7 @@ pub enum AppError {
 mod tests {
     use super::*;
 
-    #[ctor::ctor]
+    #[ctor::ctor(unsafe)]
     static LOGGER: flexi_logger::LoggerHandle = {
         let logger_handle_result = logger::start(log::LevelFilter::Off, false);
         match logger_handle_result {

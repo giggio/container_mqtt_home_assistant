@@ -13,7 +13,7 @@ use crate::{
 use async_trait::async_trait;
 use chrono::Utc;
 use hashbrown::{HashMap, HashSet};
-use rand::Rng;
+use rand::RngExt;
 use serde_json::json;
 use tokio::sync::RwLock;
 
