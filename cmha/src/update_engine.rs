@@ -106,7 +106,7 @@ impl TimedUpdateEventProvider {
                         }
                     },
                     err => {
-                        error!(category = "timed_update_event_provider"; "Error getting new and removed devices: {:?}", &err);
+                        error!(category = "timed_update_event_provider"; "Error getting new and removed devices: {err:?}");
                         yield err;
                     },
                 }

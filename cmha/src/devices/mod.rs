@@ -63,7 +63,7 @@ pub trait HandlesData: Send + Sync + Debug {
         _payload: &str,
         _cancellation_token: CancellationToken,
     ) -> Result<CommandResult> {
-        warn!("Received command for topic {topic} but has no handler implemented",);
+        warn!("Received command for topic {topic} but has no handler implemented");
         Ok(CommandResult {
             handled: false,
             state_update_topics: None,

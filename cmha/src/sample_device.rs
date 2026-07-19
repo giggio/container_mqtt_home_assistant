@@ -310,7 +310,7 @@ impl HandlesData for UptimeSensor {
         payload: &str,
         _cancellation_token: CancellationToken,
     ) -> Result<CommandResult> {
-        error!("UptimeSensor received event for topic {topic} and payload {payload}",);
+        error!("UptimeSensor received event for topic {topic} and payload {payload}");
         return Ok(CommandResult {
             handled: true,
             state_update_topics: None,

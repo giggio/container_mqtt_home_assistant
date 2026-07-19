@@ -920,6 +920,8 @@ impl HandlesData for ContainerStaticData {
 }
 
 #[cfg(test)]
+// mockall generates `async fn`s that return ready futures
+#[allow(clippy::unused_async_trait_impl)]
 pub mod container_engine_client {
     use bollard::{
         container::LogOutput,

@@ -271,7 +271,7 @@ mod tests {
                         disable_tls: false,
                     },
                     device_name: "Production Server".to_string(),
-                    publish_interval: Duration::from_millis(15000),
+                    publish_interval: Duration::from_secs(15),
                     device_manager_id: "prod_device_01".to_string(),
                     sample_device: false,
                     prefix: Some("my_prefix".to_string()),

@@ -230,10 +230,7 @@ impl DeviceManager {
     async fn publish_entities_discovery(&self, devices: Devices) -> Result<()> {
         let discovery_info = devices.create_discovery_info(&self.discovery_prefix).await?;
         for (discovery_topic, discovery_json) in discovery_info {
-            trace!(
-                "Publishing discovery, topic: {}, payload: {}",
-                &discovery_topic, &discovery_json,
-            );
+            trace!("Publishing discovery, topic: {discovery_topic}, payload: {discovery_json}");
             self.publish_to_client(discovery_topic.clone(), discovery_json).await?;
             debug!("Published device discoveries for topic: {discovery_topic}");
         }
@@ -242,7 +239,7 @@ impl DeviceManager {
 
     async fn subscribe_to_commands(&self, devices: Devices) -> Result<()> {
         debug!("Subscribing to Home Assistant status topic...");
-        self.subscribe_to_client(format!("{}/status", &self.discovery_prefix))
+        self.subscribe_to_client(format!("{}/status", self.discovery_prefix))
             .await?;
         trace!("Subscribed to Home Assistant status topic");
         debug!("Subscribing to command topics...");
@@ -257,7 +254,7 @@ impl DeviceManager {
     async fn publish_removed_entities_discovery(&self, devices: Devices) -> Result<()> {
         trace!("Removing devices and entities from Home Assistant...");
         for discovery_topic in devices.discovery_topics(&self.discovery_prefix).await {
-            trace!("Removing device for topic: {}", &discovery_topic);
+            trace!("Removing device for topic: {discovery_topic}");
             self.publish_to_client(discovery_topic, String::new()).await?;
         }
         if log_enabled!(log::Level::Info) {
@@ -939,6 +936,8 @@ pub enum EventHandlingError {
 }
 
 #[cfg(test)]
+// mocks mirror rumqttc's signatures, whose ClientError is larger than clippy likes
+#[allow(clippy::result_large_err)]
 mod mqtt_client {
     use rumqttc::v5::{ClientError, ConnectionError, Event, MqttOptions, mqttbytes::QoS};
     use std::pin::Pin;
@@ -1093,6 +1092,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    #[allow(clippy::result_large_err)]
     async fn test_disconnect_only_when_connected() {
         let _c = create_mock_client(|mock_client| {
             mock_client.expect_try_disconnect().returning(|| Ok(())).times(1);
