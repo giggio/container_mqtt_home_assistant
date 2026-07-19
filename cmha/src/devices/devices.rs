@@ -209,15 +209,11 @@ impl Devices {
     }
 
     pub async fn add_devices(&self, new_devices: Vec<Device>, cancellation_token: CancellationToken) -> Result<()> {
-        cancellation_token
-            .wait_on(self.devices.write())
-            .await?
-            .extend(new_devices.into_iter().map(|d| {
-                (
-                    d.identifier(),
-                    Arc::new(RwLock::new(d)),
-                )
-            }));
+        cancellation_token.wait_on(self.devices.write()).await?.extend(
+            new_devices
+                .into_iter()
+                .map(|d| (d.identifier(), Arc::new(RwLock::new(d)))),
+        );
         Ok(())
     }
 
