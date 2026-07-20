@@ -23,7 +23,7 @@ run:
 	cargo run
 
 build_ci:
-	forgejo-runner exec -W .forgejo/workflows/build.yaml -j build
+	[ -f .forgejo/workflows/.secrets ] && source .forgejo/workflows/.secrets && forgejo-runner exec -W .forgejo/workflows/build.yaml --var DOCKERHUB_USERNAME=giggio --secret CACHIX_AUTH_TOKEN --secret DOCKERHUB_TOKEN || echo "Secrets file missing at .forgejo/workflows/.secrets"
 
 build_release:
 	cargo build --release
