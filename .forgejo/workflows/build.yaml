@@ -37,7 +37,7 @@ jobs:
       - name: Set up cache
         uses: https://github.com/cachix/cachix-action.git@v15
         with:
-          name: cmha
+          name: giggio
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - run: |
           echo -e 'experimental-features = nix-command flakes' >> /etc/nix/nix.conf

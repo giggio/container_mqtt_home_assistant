@@ -87,6 +87,7 @@
             gnumake
             bacon
             forgejo-runner
+            cachix
           ];
         };
         formatter = pkgs.nixpkgs-fmt;
