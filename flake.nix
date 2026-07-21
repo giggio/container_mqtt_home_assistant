@@ -1,6 +1,8 @@
 {
   description = "Container Status MQTT Home Assistant";
 
+  nixConfig.extra-substituters = [ "https://giggio.cachix.org" ];
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";

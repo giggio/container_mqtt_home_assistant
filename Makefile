@@ -28,6 +28,9 @@ build_ci:
 lint:
 	cargo clippy --all-targets -- -D warnings
 
+cache:
+	nix build . --no-link --print-out-paths | cachix push giggio
+
 build_release:
 	cargo build --release
 
