@@ -55,11 +55,15 @@ docker_build_arm64_static: target/tmp/$(binary)_$(arm64_target)
 docker_build_all: docker_build_amd64_static docker_build_arm64_static
 
 docker_build_multiarch:
+ifeq ($(NO_PUSH),)
 	docker buildx imagetools create -t giggio/$(image_name):latest \
 		giggio/$(image_name):amd64 \
 		giggio/$(image_name):arm64
 	docker buildx imagetools create -t giggio/$(image_name):$(version) \
 		giggio/$(image_name):$(version)-amd64 \
 		giggio/$(image_name):$(version)-arm64
+else
+	@echo "NO_PUSH set: skipping multiarch manifest (imagetools create requires pushed images)"
+endif
 
 release: docker_build_all docker_build_multiarch
