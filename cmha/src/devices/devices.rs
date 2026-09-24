@@ -345,7 +345,7 @@ mod tests {
         let devices = Devices::new_from_single_device(device);
 
         let topics = devices.command_topics().await;
-        assert!(!topics.is_empty());
+        assert_ne!(topics.len(), 0);
     }
 
     #[tokio::test]

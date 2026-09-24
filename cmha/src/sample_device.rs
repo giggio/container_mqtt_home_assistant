@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(device.details.name, "Test Device");
         assert_eq!(device.details.identifier, "test_device");
         assert_eq!(device.availability_topic, "node_id/availability");
-        assert!(!device.entities.is_empty());
+        assert_ne!(device.entities.len(), 0);
     }
 
     #[tokio::test]
