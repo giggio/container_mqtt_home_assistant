@@ -14,7 +14,7 @@ build:
 	cargo build
 
 test:
-	cargo nextest run
+	cargo nextest run --no-fail-fast
 
 clean:
 	cargo clean
