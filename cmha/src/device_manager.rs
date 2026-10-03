@@ -968,6 +968,7 @@ mod tests {
     use crate::devices::test_helpers::*;
 
     use super::*;
+    use hashbrown::HashSet;
     use mockall::predicate;
     use mqtt_client::__mock_MockAsyncClient::__new::Context;
     use serde_json::json;
@@ -1570,5 +1571,103 @@ mod tests {
         assert!(!publish_manager.connected);
         assert!(publish_manager.join_handle.is_none());
         assert!(publish_manager.cancellation_token_source.is_none());
+    }
+
+    fn make_recording_client(published_topics: Arc<std::sync::Mutex<Vec<String>>>) -> AsyncClient {
+        let mut client = AsyncClient::default();
+        client.expect_publish().returning(move |topic, _, _, _| {
+            published_topics.lock().unwrap().push(topic);
+            Box::pin(async { Ok(()) })
+        });
+        client.expect_subscribe().returning(|_, _| Box::pin(async { Ok(()) }));
+        client
+    }
+
+    async fn wait_until_published(published_topics: &Arc<std::sync::Mutex<Vec<String>>>, topic: &str) {
+        timeout(Duration::from_secs(5), async {
+            while !published_topics
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|published| published == topic)
+            {
+                time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("topic {topic} was not published"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_device_discovered_while_connected_keeps_publishing_after_reconnect() {
+        let published_topics = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let mut client = make_recording_client(published_topics.clone());
+        let topics_for_clones = published_topics.clone();
+        client
+            .expect_clone()
+            .returning(move || make_recording_client(topics_for_clones.clone()));
+        let context = AsyncClient::new_context();
+        context.expect().return_once(move |_, _| (client, EventLoop::new()));
+        let manager = make_device_manager();
+
+        let has_discovered_device = Arc::new(AtomicBool::new(false));
+        let mut provider = crate::devices::MockDeviceProvider::new();
+        provider
+            .expect_add_discovered_devices()
+            .returning(move |devices, _, cancellation_token| {
+                if has_discovered_device.swap(true, Ordering::SeqCst) {
+                    return Box::pin(future::ready(Ok(HashSet::new())));
+                }
+                let devices = devices.clone();
+                Box::pin(async move {
+                    let mut device = make_device_with_identifier("discovered_device")
+                        .with_cancellation_token(cancellation_token.clone());
+                    let mut data_handler = MockHandlesData::new();
+                    data_handler.expect_get_entity_data().returning(|cancellation_token| {
+                        Box::pin(async move {
+                            cancellation_token
+                                .wait_on(future::ready(()))
+                                .await
+                                .map(|()| hashmap! { "discovered_device/state".to_string() => "on".to_string() })
+                                .map_err(Into::into)
+                        })
+                    });
+                    device.data_handlers.push(Box::new(data_handler));
+                    devices.add_devices(vec![device], cancellation_token).await?;
+                    Ok(HashSet::from(["discovered_device".to_string()]))
+                })
+            });
+        provider
+            .expect_remove_missing_devices()
+            .returning(|_, _| Box::pin(future::ready(Ok(vec![]))));
+        let providers: Arc<Vec<Box<dyn DeviceProvider>>> = Arc::new(vec![Box::new(provider)]);
+        let devices = Devices::from_device_providers(
+            Arc::new(vec![]),
+            manager.availability_topic(),
+            CancellationToken::default(),
+        )
+        .await
+        .unwrap();
+        let mut publish_manager = PublishManager::new(devices);
+
+        publish_manager
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, providers.clone(), true)
+            .await
+            .unwrap();
+        wait_until_published(&published_topics, "discovered_device/state").await;
+        published_topics.lock().unwrap().clear();
+
+        publish_manager
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, providers.clone(), false)
+            .await
+            .unwrap();
+        publish_manager
+            .deal_with_connection_status_change_and_manage_periodic_publishing(&manager, providers, true)
+            .await
+            .unwrap();
+
+        wait_until_published(&published_topics, "discovered_device/state").await;
+        publish_manager.stop().await;
     }
 }

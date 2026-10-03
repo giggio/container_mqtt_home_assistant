@@ -92,6 +92,11 @@ impl Device {
         }
     }
 
+    pub fn with_cancellation_token(mut self, cancellation_token: CancellationToken) -> Self {
+        self.cancellation_token = cancellation_token;
+        self
+    }
+
     pub fn with_source_id(mut self, source_id: String) -> Self {
         self.source_id = Some(source_id);
         self

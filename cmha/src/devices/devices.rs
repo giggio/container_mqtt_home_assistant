@@ -11,6 +11,9 @@ use tokio::sync::RwLock;
 #[derive(Clone, Debug)]
 pub struct Devices {
     devices: Arc<RwLock<HashMap<String, Arc<RwLock<Device>>>>>,
+    /// Devices outlive the publishing loop that discovers them, so devices added later must not keep the token of
+    /// the loop that added them: it is cancelled on every disconnection and a cancelled token never recovers.
+    device_cancellation_token: Option<CancellationToken>,
 }
 
 impl Devices {
@@ -21,7 +24,10 @@ impl Devices {
                 .map(|d| (d.details.identifier.clone(), Arc::new(RwLock::new(d))))
                 .collect(),
         ));
-        Self { devices }
+        Self {
+            devices,
+            device_cancellation_token: None,
+        }
     }
 
     pub async fn new_from_many_shared_devices(devices: Vec<Arc<RwLock<Device>>>) -> Self {
@@ -37,7 +43,10 @@ impl Devices {
                 })
                 .await,
         )));
-        Self { devices }
+        Self {
+            devices,
+            device_cancellation_token: None,
+        }
     }
 
     #[cfg(test)]
@@ -46,6 +55,7 @@ impl Devices {
             devices: Arc::new(RwLock::new(
                 hashmap! {device.details.identifier.clone() => Arc::new(RwLock::new(device))},
             )),
+            device_cancellation_token: None,
         }
     }
 
@@ -67,6 +77,7 @@ impl Devices {
         }
         Ok(Devices {
             devices: Arc::new(RwLock::new(all_devices)),
+            device_cancellation_token: Some(cancellation_token),
         })
     }
 
@@ -201,6 +212,7 @@ impl Devices {
             .collect::<HashMap<_, _>>();
         Devices {
             devices: Arc::new(RwLock::new(filtered_devices)),
+            device_cancellation_token: self.device_cancellation_token.clone(),
         }
     }
 
@@ -209,11 +221,16 @@ impl Devices {
     }
 
     pub async fn add_devices(&self, new_devices: Vec<Device>, cancellation_token: CancellationToken) -> Result<()> {
-        cancellation_token.wait_on(self.devices.write()).await?.extend(
-            new_devices
-                .into_iter()
-                .map(|d| (d.identifier(), Arc::new(RwLock::new(d)))),
-        );
+        let new_devices = new_devices
+            .into_iter()
+            .map(|device| match &self.device_cancellation_token {
+                Some(device_cancellation_token) => device.with_cancellation_token(device_cancellation_token.clone()),
+                None => device,
+            });
+        cancellation_token
+            .wait_on(self.devices.write())
+            .await?
+            .extend(new_devices.map(|d| (d.identifier(), Arc::new(RwLock::new(d)))));
         Ok(())
     }
 
@@ -232,6 +249,7 @@ impl Devices {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cancellation_token::CancellationTokenSource;
     use crate::devices::MockHandlesData;
     use crate::devices::test_helpers::*;
     use pretty_assertions::assert_eq;
@@ -412,6 +430,34 @@ mod tests {
         assert_eq!(devices.len().await, 2);
         assert!(devices.get("device1").await.is_some());
         assert!(devices.get("device2").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_added_devices_survive_cancellation_of_the_token_used_to_add_them() {
+        let mut loop_token_source = CancellationTokenSource::new();
+        let loop_token = loop_token_source.create_token().await;
+        let mut device = make_device_with_identifier("device1").with_cancellation_token(loop_token.clone());
+        let mut data_handler = MockHandlesData::new();
+        data_handler.expect_get_entity_data().returning(|cancellation_token| {
+            Box::pin(async move {
+                cancellation_token
+                    .wait_on(future::ready(()))
+                    .await
+                    .map(|()| hashmap! { "topic".to_string() => "payload".to_string() })
+                    .map_err(Into::into)
+            })
+        });
+        device.data_handlers.push(Box::new(data_handler));
+        let devices = Devices {
+            devices: Arc::new(RwLock::new(HashMap::new())),
+            device_cancellation_token: Some(CancellationToken::default()),
+        };
+        devices.add_devices(vec![device], loop_token).await.unwrap();
+
+        loop_token_source.cancel().await;
+
+        let data = devices.get_entities_data().await.unwrap();
+        assert_eq!(data.get("topic").unwrap(), "payload");
     }
 
     #[tokio::test]

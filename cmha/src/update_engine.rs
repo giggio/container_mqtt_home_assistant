@@ -184,7 +184,7 @@ async fn get_events_from_devices(
             trace!(category = "timed_update_event_provider"; "Publishing sensor data...");
             let device = cancellation_token.wait_on(device_arc.read()).await?;
             debug!(category = "timed_update_event_provider"; "Getting entities data for device: {}", device.details.name);
-            let data = device.get_entities_data().await?;
+            let data = cancellation_token.wait_on(device.get_entities_data()).await??;
             trace!(category = "timed_update_event_provider"; "Got entities data for device: {}: {data:?}", device.details.name);
             Ok(data)
         })
@@ -310,6 +310,8 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
+    use crate::cancellation_token::CancellationTokenSource;
+    use crate::devices::MockHandlesData;
     use crate::devices::test_helpers::*;
     use pretty_assertions::assert_eq;
 
@@ -489,5 +491,36 @@ mod tests {
         let messages = last_messages.lock().await;
         assert!(!messages.contains_key("removed_device/test_device/state"));
         assert!(messages.contains_key("other_device/test_device/state"));
+    }
+
+    #[tokio::test]
+    async fn test_entity_update_event_producer_cancels_a_device_read_that_never_completes() {
+        let mut device = make_device_with_identifier("hanging_device");
+        let mut data_handler = MockHandlesData::new();
+        data_handler
+            .expect_get_entity_data()
+            .returning(|_| Box::pin(future::pending()));
+        device.data_handlers.push(Box::new(data_handler));
+        let devices = Devices::new_from_single_device(device);
+        let mut cancellation_token_source = CancellationTokenSource::new();
+        let cancellation_token = cancellation_token_source.create_token().await;
+        let event_producer = TimedUpdateEventProvider::create_entity_update_event_producer(
+            &devices,
+            cancellation_token,
+            Duration::from_millis(1),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        let mut event_producer = pin!(event_producer);
+        tokio::spawn(async move {
+            time::sleep(Duration::from_millis(50)).await;
+            cancellation_token_source.cancel().await;
+        });
+
+        let event = time::timeout(Duration::from_secs(5), event_producer.next())
+            .await
+            .unwrap_or_else(|_| panic!("the device read was not interrupted by the cancellation"))
+            .unwrap();
+
+        assert!(matches!(event, Err(Error::Cancellation(_))));
     }
 }
