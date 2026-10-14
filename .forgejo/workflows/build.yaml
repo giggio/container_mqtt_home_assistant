@@ -74,6 +74,8 @@ jobs:
           path: target/tmp/
       - name: Make binaries executable
         run: chmod +x target/tmp/*
+      - name: Start docker
+        uses: https://codeberg.org/giggio/start-docker@v1
       - name: Login to Docker Hub
         uses: https://github.com/docker/login-action.git@v3
         with:
